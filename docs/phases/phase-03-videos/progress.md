@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 5/14 completed
+**SIs:** 6/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -41,9 +41,12 @@
   - **Correction after the first commit of this SI:** the full unit+integration run was actually red when this SI was first committed (`462a89c`) — `migrations.integration-spec.ts` passed alone but failed inside the full run with `deadlock detected`: its `beforeAll` issued the `DROP TABLE … CASCADE` statements concurrently and, with five FK-linked tables, they deadlocked, which then left the enum types behind and broke the E2E suite. Fixed in the follow-up commit by dropping all tables in one statement; verified with three consecutive full runs (175/175) plus 52/52 E2E.
 
 ### SI-03.6 — Upload Initiation with Draft Pre-registration
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 64 passing — unit+integration 55 across `src/videos` + `src/channels` (`videos.service.spec.ts` 12, `videos.service.integration-spec.ts` 3, `channels.service.integration-spec.ts` incl. 2 new for `findByUserId`), E2E `test/videos.e2e-spec.ts` 9; `tsc` and `eslint` clean
+- **Observations:** 
+  - Added `src/common/database/pg-errors.util.ts` (`isUniqueViolationOn`) for the public-id retry. `ChannelsService` keeps its own private copy of the same check; unifying them is a follow-up outside this SI.
+  - E2E authentication uses a token signed by the application's own `JwtService` for a user created by the test factory (`test/helpers/video-e2e.ts`), instead of the register → confirm → login round-trip, to keep video suites independent of mail and of the auth rate limit.
+  - Response/DTO file is `src/videos/dto/upload-state.dto.ts` (holds the initiate response and the upload-state response used by SI-03.7).
 
 ### SI-03.7 — Upload Parts: Presigned URLs, Resume, State and Abort
 - **Status:** pending
