@@ -1,10 +1,13 @@
 import { randomBytes } from 'node:crypto';
+import { getQueueToken } from '@nestjs/bullmq';
 import { INestApplication } from '@nestjs/common';
+import type { Queue } from 'bullmq';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { DataSource, Repository } from 'typeorm';
 import { cleanAllTables } from '../src/test/create-test-data-source';
-import { useIsolatedQueuePrefix } from '../src/test/queue-test-env';
+import { VIDEO_PROCESSING_QUEUE } from '../src/queue/queue.constants';
+import { emptyQueue, useIsolatedQueuePrefix } from '../src/test/queue-test-env';
 import { useInternalStorageEndpoint } from '../src/test/storage-test-env';
 import { Video, VideoStatus } from '../src/videos/entities/video.entity';
 import {
@@ -18,6 +21,7 @@ describe('Videos (e2e)', () => {
   let dataSource: DataSource;
   let videoRepository: Repository<Video>;
   let owner: AuthenticatedUser;
+  let processingQueue: Queue;
 
   beforeAll(async () => {
     // Presigned URLs must be reachable from this container, and enqueued jobs
@@ -26,13 +30,16 @@ describe('Videos (e2e)', () => {
     useIsolatedQueuePrefix();
     ({ app, dataSource } = await createE2eApp());
     videoRepository = dataSource.getRepository(Video);
+    processingQueue = app.get<Queue>(getQueueToken(VIDEO_PROCESSING_QUEUE));
   });
 
   afterAll(async () => {
+    await emptyQueue(processingQueue);
     await app.close();
   });
 
   beforeEach(async () => {
+    await emptyQueue(processingQueue);
     await cleanAllTables(dataSource);
     owner = await createAuthenticatedUser(app, dataSource);
   });
@@ -306,6 +313,156 @@ describe('Videos (e2e)', () => {
 
         expect(res.body.error).toBe('VALIDATION_ERROR');
       });
+    });
+  });
+
+  describe('POST /videos/:id/upload/complete', () => {
+    const fileBytes = randomBytes(4096);
+
+    async function initiateAndUpload(
+      uploaded: Buffer = fileBytes,
+    ): Promise<{ videoId: string; etag: string }> {
+      const created = await request(app.getHttpServer())
+        .post('/videos')
+        .set('Authorization', owner.authorization)
+        .send({ ...validBody, size: fileBytes.length })
+        .expect(201);
+      const videoId = created.body.id as string;
+      const urls = await request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload/part-urls`)
+        .set('Authorization', owner.authorization)
+        .send({ part_numbers: [1] })
+        .expect(200);
+      const put = await fetch(urls.body.urls[0].url, {
+        method: 'PUT',
+        body: new Uint8Array(uploaded),
+      });
+      return { videoId, etag: put.headers.get('etag') as string };
+    }
+
+    function complete(videoId: string, body: object) {
+      return request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload/complete`)
+        .set('Authorization', owner.authorization)
+        .send(body);
+    }
+
+    it('returns 200, moves the video to processing and publishes the job', async () => {
+      const { videoId, etag } = await initiateAndUpload();
+
+      const res = await complete(videoId, {
+        parts: [{ part_number: 1, etag }],
+      }).expect(200);
+
+      expect(res.body).toEqual({
+        id: videoId,
+        public_id: expect.stringMatching(/^[A-Za-z0-9_-]{11}$/),
+        status: 'processing',
+      });
+      const state = await request(app.getHttpServer())
+        .get(`/videos/${videoId}/upload`)
+        .set('Authorization', owner.authorization)
+        .expect(200);
+      expect(state.body.status).toBe('processing');
+      const job = await processingQueue.getJob(videoId);
+      expect(job?.data).toEqual({ videoId });
+    });
+
+    it('returns 409 on a second completion and does not publish again', async () => {
+      const { videoId, etag } = await initiateAndUpload();
+      const body = { parts: [{ part_number: 1, etag }] };
+      await complete(videoId, body).expect(200);
+
+      const res = await complete(videoId, body).expect(409);
+
+      expect(res.body.error).toBe('VIDEO_UPLOAD_NOT_IN_PROGRESS');
+      expect(await processingQueue.getJobCounts('waiting')).toEqual({
+        waiting: 1,
+      });
+    });
+
+    it('returns 409 for part URLs, part listing and abort once processing started', async () => {
+      const { videoId, etag } = await initiateAndUpload();
+      await complete(videoId, { parts: [{ part_number: 1, etag }] }).expect(
+        200,
+      );
+      const server = app.getHttpServer();
+
+      const responses = await Promise.all([
+        request(server)
+          .post(`/videos/${videoId}/upload/part-urls`)
+          .set('Authorization', owner.authorization)
+          .send({ part_numbers: [1] }),
+        request(server)
+          .get(`/videos/${videoId}/upload/parts`)
+          .set('Authorization', owner.authorization),
+        request(server)
+          .delete(`/videos/${videoId}/upload`)
+          .set('Authorization', owner.authorization),
+      ]);
+
+      for (const res of responses) {
+        expect(res.status).toBe(409);
+        expect(res.body.error).toBe('VIDEO_UPLOAD_NOT_IN_PROGRESS');
+      }
+    });
+
+    it('returns 400 INVALID_UPLOAD_PARTS for an ETag the storage does not know', async () => {
+      const { videoId } = await initiateAndUpload();
+
+      const res = await complete(videoId, {
+        parts: [{ part_number: 1, etag: '"00000000000000000000000000000000"' }],
+      }).expect(400);
+
+      expect(res.body.error).toBe('INVALID_UPLOAD_PARTS');
+      const saved = await videoRepository.findOneByOrFail({ id: videoId });
+      expect(saved.status).toBe(VideoStatus.DRAFT);
+    });
+
+    it('returns 400 UPLOAD_SIZE_MISMATCH and discards the draft when bytes are missing', async () => {
+      const { videoId, etag } = await initiateAndUpload(randomBytes(100));
+
+      const res = await complete(videoId, {
+        parts: [{ part_number: 1, etag }],
+      }).expect(400);
+
+      expect(res.body.error).toBe('UPLOAD_SIZE_MISMATCH');
+      await request(app.getHttpServer())
+        .get(`/videos/${videoId}/upload`)
+        .set('Authorization', owner.authorization)
+        .expect(404);
+    });
+
+    it.each([
+      ['no parts', { parts: [] }],
+      ['a part without etag', { parts: [{ part_number: 1 }] }],
+      [
+        'a non-integer part number',
+        { parts: [{ part_number: 'one', etag: '"a"' }] },
+      ],
+      [
+        'an unknown property inside a part',
+        { parts: [{ part_number: 1, etag: '"a"', size: 1 }] },
+      ],
+    ])('returns 400 VALIDATION_ERROR for %s', async (_label, body) => {
+      const { videoId } = await initiateAndUpload();
+
+      const res = await complete(videoId, body).expect(400);
+
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns 403 VIDEO_NOT_OWNED for another user', async () => {
+      const { videoId, etag } = await initiateAndUpload();
+      const other = await createAuthenticatedUser(app, dataSource);
+
+      const res = await request(app.getHttpServer())
+        .post(`/videos/${videoId}/upload/complete`)
+        .set('Authorization', other.authorization)
+        .send({ parts: [{ part_number: 1, etag }] })
+        .expect(403);
+
+      expect(res.body.error).toBe('VIDEO_NOT_OWNED');
     });
   });
 });

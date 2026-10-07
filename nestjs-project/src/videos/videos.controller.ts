@@ -22,6 +22,10 @@ import type { JwtPayload } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import {
+  CompleteUploadDto,
+  UploadCompletedDto,
+} from './dto/complete-upload.dto';
+import {
   CreatePartUrlsDto,
   PartUrlsDto,
   UploadedPartsDto,
@@ -180,5 +184,24 @@ export class VideosController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<void> {
     return this.videosService.abortUpload(user.sub, id);
+  }
+
+  @Post(':id/upload/complete')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth('access-token')
+  @ApiOperation({
+    summary: 'Complete an upload',
+    description:
+      'Assembles the uploaded parts into the final object, confirms its size, moves the video to processing and publishes the background processing job.',
+  })
+  @ApiResponse({ status: 200, type: UploadCompletedDto })
+  @ApiOwnerErrors()
+  @ApiUploadNotInProgress()
+  async completeUpload(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CompleteUploadDto,
+  ): Promise<UploadCompletedDto> {
+    return this.videosService.completeUpload(user.sub, id, dto.parts);
   }
 }

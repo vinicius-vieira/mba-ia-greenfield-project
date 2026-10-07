@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 7/14 completed
+**SIs:** 8/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -56,9 +56,12 @@
   - E2E drafts that are not aborted leave unfinished multipart uploads behind in the MinIO volume of the dev stack; harmless for the suites, no cleanup job exists (stale drafts are left as-is in this phase per `phase-03-videos/TD-07`).
 
 ### SI-03.8 — Upload Completion and Processing Job Publishing
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** `videos.service.spec.ts` 43 (14 new), `videos.service.integration-spec.ts` 11 (5 new, real DB + MinIO + Redis), E2E `test/videos.e2e-spec.ts` 44 (10 new); full suites after this SI: 230/230 unit+integration, 96/96 E2E
+- **Observations:** 
+  - **`npm run test:e2e` now passes `--runInBand`.** `nestjs-project/CLAUDE.md` says the script is "already configured" to run in band, but `package.json` had plain `jest --config ./test/jest-e2e.json`; with a second database-backed E2E suite the parallel workers truncated each other's tables (5 failures). Script fixed to match the documented behavior.
+  - Job options also set `removeOnComplete: true` and `removeOnFail: 1000` (retention only; attempts/backoff are as specified in Events/Messages).
+  - Compensation path covered end to end: a failed publish reverts the row to `draft` and a second `complete` call succeeds without re-assembling the object.
 
 ### SI-03.9 — Media Inspection with FFmpeg
 - **Status:** pending

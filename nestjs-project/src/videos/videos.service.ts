@@ -1,18 +1,32 @@
 import { randomUUID } from 'node:crypto';
 import { parse } from 'node:path';
+import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import type { Queue } from 'bullmq';
 import { Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { isUniqueViolationOn } from '../common/database/pg-errors.util';
 import {
   InvalidUploadPartsException,
+  UploadSizeMismatchException,
   VideoNotFoundException,
   VideoNotOwnedException,
   VideoUploadNotInProgressException,
 } from '../common/exceptions/domain.exception';
+import {
+  PROCESS_VIDEO_JOB,
+  type ProcessVideoJobData,
+  VIDEO_PROCESSING_JOB_OPTIONS,
+  VIDEO_PROCESSING_QUEUE,
+} from '../queue/queue.constants';
 import { videoOriginalKey } from '../storage/storage.constants';
+import { InvalidMultipartPartsError } from '../storage/storage.errors';
 import { StorageService } from '../storage/storage.service';
+import {
+  CompletedPartDto,
+  UploadCompletedDto,
+} from './dto/complete-upload.dto';
 import { PartUrlsDto, UploadedPartsDto } from './dto/create-part-urls.dto';
 import { InitiateUploadDto } from './dto/initiate-upload.dto';
 import {
@@ -50,6 +64,8 @@ export class VideosService {
     private readonly videoRepository: Repository<Video>,
     private readonly channelsService: ChannelsService,
     private readonly storageService: StorageService,
+    @InjectQueue(VIDEO_PROCESSING_QUEUE)
+    private readonly processingQueue: Queue<ProcessVideoJobData>,
   ) {}
 
   /**
@@ -197,6 +213,86 @@ export class VideosService {
       await this.storageService.deleteObject(video.storage_key);
     }
     await this.videoRepository.delete({ id: video.id });
+  }
+
+  /**
+   * Finishes the upload and hands the video to background processing. This
+   * is the only trigger for processing.
+   */
+  async completeUpload(
+    userId: string,
+    videoId: string,
+    parts: CompletedPartDto[],
+  ): Promise<UploadCompletedDto> {
+    const video = await this.getOwnedDraft(userId, videoId);
+
+    // Skipped on a retry after a failed publish: the object is already whole.
+    const uploadId = await this.findUploadId(video.id);
+    if (uploadId) {
+      await this.assembleObject(video, uploadId, parts);
+    }
+
+    const storedSize = await this.storageService.headObject(video.storage_key);
+    if (storedSize !== video.size) {
+      await this.storageService.deleteObject(video.storage_key);
+      await this.videoRepository.delete({ id: video.id });
+      throw new UploadSizeMismatchException();
+    }
+
+    // Conditional: a concurrent completion of the same video loses here.
+    const moved = await this.videoRepository.update(
+      { id: video.id, status: VideoStatus.DRAFT },
+      { status: VideoStatus.PROCESSING },
+    );
+    if (!moved.affected) {
+      throw new VideoUploadNotInProgressException();
+    }
+
+    try {
+      await this.processingQueue.add(
+        PROCESS_VIDEO_JOB,
+        { videoId: video.id },
+        { ...VIDEO_PROCESSING_JOB_OPTIONS, jobId: video.id },
+      );
+    } catch (err) {
+      // Nothing will process it: give the caller back a draft it can retry.
+      await this.videoRepository.update(
+        { id: video.id, status: VideoStatus.PROCESSING },
+        { status: VideoStatus.DRAFT },
+      );
+      throw err;
+    }
+
+    return {
+      id: video.id,
+      public_id: video.public_id,
+      status: VideoStatus.PROCESSING,
+    };
+  }
+
+  private async assembleObject(
+    video: Video,
+    uploadId: string,
+    parts: CompletedPartDto[],
+  ): Promise<void> {
+    try {
+      await this.storageService.completeMultipartUpload(
+        video.storage_key,
+        uploadId,
+        parts.map((part) => ({
+          partNumber: part.part_number,
+          etag: part.etag,
+        })),
+      );
+    } catch (err) {
+      if (err instanceof InvalidMultipartPartsError) {
+        throw new InvalidUploadPartsException(
+          'Storage rejected the uploaded parts',
+        );
+      }
+      throw err;
+    }
+    await this.videoRepository.update({ id: video.id }, { upload_id: null });
   }
 
   private async getOwnedDraft(userId: string, videoId: string): Promise<Video> {
