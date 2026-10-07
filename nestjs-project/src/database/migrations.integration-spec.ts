@@ -14,6 +14,10 @@ const MANAGED_TABLES = [
   'verification_tokens',
 ];
 
+// Enum types survive `DROP TABLE`; without dropping them the migrations fail
+// with "type already exists" on a database that was migrated before.
+const MANAGED_ENUM_TYPES = ['verification_tokens_type_enum'];
+
 describe('Database migrations (integration)', () => {
   let dataSource: DataSource;
 
@@ -37,6 +41,9 @@ describe('Database migrations (integration)', () => {
       ),
       dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`),
     ]);
+    for (const type of MANAGED_ENUM_TYPES) {
+      await dataSource.query(`DROP TYPE IF EXISTS "${type}"`);
+    }
   });
 
   afterAll(async () => {

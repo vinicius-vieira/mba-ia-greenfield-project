@@ -1,12 +1,14 @@
 import { DataSource, EntitySchema, MigrationInterface } from 'typeorm';
 
+type EntityClass = abstract new (...args: any[]) => unknown;
+
 interface TestDataSourceOptions {
   synchronize?: boolean;
   migrations?: (new () => MigrationInterface)[];
 }
 
 export function createTestDataSource(
-  entities: (Function | string | EntitySchema<any>)[],
+  entities: (EntityClass | string | EntitySchema<any>)[],
   options: TestDataSourceOptions = {},
 ): DataSource {
   const { synchronize = true, migrations } = options;

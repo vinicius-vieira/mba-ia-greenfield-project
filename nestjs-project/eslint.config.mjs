@@ -32,4 +32,24 @@ export default tseslint.config(
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },
+  {
+    // Test code leans on `any` (supertest bodies, jest mocks, partial fakes).
+    // `no-explicit-any` is already off project-wide; these are its type-aware
+    // counterparts, relaxed only for test files.
+    files: [
+      '**/*.spec.ts',
+      '**/*.integration-spec.ts',
+      'test/**/*.ts',
+      'src/test/**/*.ts',
+    ],
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/require-await': 'off',
+    },
+  },
 );
