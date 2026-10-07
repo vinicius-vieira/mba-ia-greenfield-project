@@ -101,6 +101,8 @@ A standalone application wraps the Nest IoC container without network listeners.
 
 **Version pin:** `^6.3.x` (registry latest 6.3.11, `main: ./dist/cjs/index.js`, `engines.node >= 14.17`).
 
+**Redis client peer:** `bullmq@6` declares `ioredis` (`>=5.0.0`) as an *optional* peer dependency and does not install it; with `connection: { host, port }` options it loads `ioredis` at runtime and fails with "BullMQ could not load the optional 'ioredis' package" when absent. The project installs `ioredis@^5` alongside it (found during SI-03.4).
+
 ### Job options used by this phase
 
 ```typescript

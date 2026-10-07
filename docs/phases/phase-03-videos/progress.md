@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 3/14 completed
+**SIs:** 4/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -26,9 +26,10 @@
   - Added `src/storage/storage.errors.ts` (`InvalidMultipartPartsError`) and `src/storage/storage.types.ts` — not listed as separate files in the plan; they hold the storage-level error and types the service methods expose.
 
 ### SI-03.4 — Queue Module (BullMQ Connection)
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 2/2 passing (`queue.module.integration-spec.ts` against real Redis)
+- **Observations:** 
+  - **Extra dependency:** `bullmq@6` treats `ioredis` as an optional peer and fails at connection time without it; installed `ioredis@^5` (resolved `^5.11.1`). Recorded in `library-refs.md`; the plan's dependency list in SI-03.2 did not include it.
 
 ### SI-03.5 — Video Entity and Migration
 - **Status:** pending
