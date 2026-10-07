@@ -118,3 +118,85 @@ Content-Type: {{contentType}}
   "token": "{{resetToken}}",
   "new_password": "new-password123"
 }
+
+
+###
+# ─────────────────────────────────────────────
+# VÍDEOS — UPLOAD (dono do canal, requer login)
+# Fluxo: iniciar → pedir URLs das partes → PUT de cada parte direto no storage
+#        → concluir → acompanhar o processamento
+# ─────────────────────────────────────────────
+
+@videoId = {{initiateUpload.response.body.$.id}}
+@videoPublicId = {{initiateUpload.response.body.$.public_id}}
+
+### POST /videos — inicia o upload (pré-cadastra o vídeo como rascunho)
+# size em bytes (máx. 10GB = 10737418240). A resposta traz part_size e part_count.
+# @name initiateUpload
+POST {{baseUrl}}/videos
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "filename": "meu-video.mp4",
+  "content_type": "video/mp4",
+  "size": 1048576
+}
+
+### POST /videos/:id/upload/part-urls — URLs pré-assinadas (até 100 partes por chamada)
+# Envie os bytes de cada parte com PUT na URL retornada e guarde o header ETag da resposta:
+#   curl -X PUT --data-binary @parte1.bin "<url>" -i
+# @name partUrls
+POST {{baseUrl}}/videos/{{videoId}}/upload/part-urls
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "part_numbers": [1]
+}
+
+### GET /videos/:id/upload/parts — partes já recebidas pelo storage (retomada)
+GET {{baseUrl}}/videos/{{videoId}}/upload/parts
+Authorization: Bearer {{accessToken}}
+
+### POST /videos/:id/upload/complete — conclui o upload e dispara o processamento
+# Substitua o etag pelo valor devolvido pelo storage no PUT da parte (com as aspas).
+POST {{baseUrl}}/videos/{{videoId}}/upload/complete
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "parts": [
+    { "part_number": 1, "etag": "\"<etag devolvido pelo storage>\"" }
+  ]
+}
+
+### GET /videos/:id/upload — estado do vídeo (draft → processing → ready | failed)
+GET {{baseUrl}}/videos/{{videoId}}/upload
+Authorization: Bearer {{accessToken}}
+
+### DELETE /videos/:id/upload — aborta um upload em andamento e remove o rascunho
+DELETE {{baseUrl}}/videos/{{videoId}}/upload
+Authorization: Bearer {{accessToken}}
+
+
+###
+# ─────────────────────────────────────────────
+# VÍDEOS — ACESSO PÚBLICO PELA URL ÚNICA (somente vídeos "ready")
+# ─────────────────────────────────────────────
+
+### GET /videos/:publicId — detalhes (duração, metadados, canal)
+GET {{baseUrl}}/videos/{{videoPublicId}}
+
+### GET /videos/:publicId/stream — 302 para URL pré-assinada (o storage responde Range/206)
+# Para ver o 206: curl -L -H "Range: bytes=0-99" -o /dev/null -D - {{baseUrl}}/videos/<publicId>/stream
+# @no-redirect
+GET {{baseUrl}}/videos/{{videoPublicId}}/stream
+
+### GET /videos/:publicId/download — 302 para URL pré-assinada com Content-Disposition: attachment
+# @no-redirect
+GET {{baseUrl}}/videos/{{videoPublicId}}/download
+
+### GET /videos/:publicId/thumbnail — 302 para o JPEG gerado no processamento
+# @no-redirect
+GET {{baseUrl}}/videos/{{videoPublicId}}/thumbnail

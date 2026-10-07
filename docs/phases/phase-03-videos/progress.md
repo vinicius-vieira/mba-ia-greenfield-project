@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 12/14 completed
+**SIs:** 13/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -94,9 +94,12 @@
   - A `ready` row missing `duration`/`metadata` or `thumbnail_key` is answered as `VIDEO_NOT_FOUND` rather than a 500.
 
 ### SI-03.13 — End-to-End Pipeline Through the Real Worker and Contract Export
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** `test/video-pipeline.e2e-spec.ts` 2/2 passing through the real `video-worker` container (upload → `ready` with details, `206` range, attachment download, JPEG thumbnail; non-media file → `failed` with reason); `openapi-export.integration-spec.ts` 2 new; full suites: 306/306 unit+integration, 118/118 E2E; `tsc` 0, `npm run lint` 0, `npm run build` 0
+- **Observations:** 
+  - **Request-body schemas are empty in `openapi.json` (pre-existing):** `npm run openapi:export` runs under `ts-node`, where the `@nestjs/swagger` CLI plugin does not run, so request DTOs documented only through `class-validator` (the project rule) are exported as `{ "properties": {} }`. This was already the case for `RegisterDto`, `LoginDto` etc. on `main`; the new video request DTOs behave the same. Paths, parameters, status codes and response DTOs (which use `@ApiProperty`) are complete. Fixing the export mechanism belongs to the OpenAPI task, not to this phase.
+  - `scripts/sync-openapi.sh` was run; `next-frontend/openapi.json` is git-ignored, so the tracked frontend change is `next-frontend/lib/api/types.gen.ts`, regenerated with the pinned `openapi-typescript@7.13.0` (813 added lines, none removed). The frontend test suite was not run (its dependencies are not installed in this environment).
+  - The pipeline spec depends on the `video-worker` container being up; when it is not, the test fails after 90s with a message pointing to `docker compose ps`.
 
 ### SI-03.14 — AI Foundation and Documentation Update
 - **Status:** pending

@@ -128,4 +128,41 @@ describe('exportSpec (integration)', () => {
       }
     }
   });
+
+  it('documents every video endpoint under the videos tag', () => {
+    const paths = document.paths as Record<
+      string,
+      Record<string, { tags?: string[] }>
+    >;
+    const expected: [string, string][] = [
+      ['/videos', 'post'],
+      ['/videos/{id}/upload', 'get'],
+      ['/videos/{id}/upload', 'delete'],
+      ['/videos/{id}/upload/part-urls', 'post'],
+      ['/videos/{id}/upload/parts', 'get'],
+      ['/videos/{id}/upload/complete', 'post'],
+      ['/videos/{publicId}', 'get'],
+      ['/videos/{publicId}/stream', 'get'],
+      ['/videos/{publicId}/download', 'get'],
+      ['/videos/{publicId}/thumbnail', 'get'],
+    ];
+
+    for (const [path, method] of expected) {
+      expect(paths[path]?.[method]?.tags).toEqual(['videos']);
+    }
+  });
+
+  it('requires the bearer token only on the owner video endpoints', () => {
+    const paths = document.paths as Record<
+      string,
+      Record<string, { security?: unknown[] }>
+    >;
+
+    expect(paths['/videos'].post.security).toEqual([{ 'access-token': [] }]);
+    expect(paths['/videos/{id}/upload/complete'].post.security).toEqual([
+      { 'access-token': [] },
+    ]);
+    expect(paths['/videos/{publicId}'].get.security).toBeUndefined();
+    expect(paths['/videos/{publicId}/stream'].get.security).toBeUndefined();
+  });
 });
