@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 2/14 completed
+**SIs:** 3/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -19,9 +19,11 @@
   - `ffmpeg`/`ffprobe` 5.1.9 (Debian 12 package) verified inside `nestjs-api`.
 
 ### SI-03.3 — Storage Module (S3-Compatible Object Storage)
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 12/12 passing (`storage.service.integration-spec.ts` against real MinIO, `storage.module.spec.ts`, `storage.constants.spec.ts`)
+- **Observations:** 
+  - The S3 clients are created with `requestChecksumCalculation: 'WHEN_REQUIRED'`: recent AWS SDK v3 releases otherwise sign a checksum header into presigned `UploadPart` URLs, which a plain HTTP `PUT` does not send.
+  - Added `src/storage/storage.errors.ts` (`InvalidMultipartPartsError`) and `src/storage/storage.types.ts` — not listed as separate files in the plan; they hold the storage-level error and types the service methods expose.
 
 ### SI-03.4 — Queue Module (BullMQ Connection)
 - **Status:** pending
