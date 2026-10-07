@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 10/14 completed
+**SIs:** 11/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -79,9 +79,12 @@
   - First run had 1 failing test from a bug in the spec's own helper (a default parameter swallowed an explicit `undefined`); helper fixed, no production change.
 
 ### SI-03.11 — Video Worker Entrypoint and Compose Service
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** `worker.module.spec.ts` 1/1 passing; full suites with `AppModule` now importing `DatabaseModule`: 284/284 unit+integration, 96/96 E2E; `video-worker` container started by `docker compose up -d` and logged `Video worker started`
+- **Observations:** 
+  - **Worker scripts use ts-node instead of `nest start --entryFile worker`:** `start:worker` (`ts-node --transpile-only`), `start:worker:dev` (`node --watch` + ts-node register) and `start:worker:prod` (`node dist/worker`). The API and the worker share the bind-mounted project folder, and `nest start` compiles into `dist/` with `deleteOutDir: true` — two watch processes would wipe each other's output.
+  - The `ConfigModule.forRoot` options were extracted to `src/config/config-module.options.ts` so `AppModule` and `WorkerModule` load the same namespaces and Joi schema (the plan described this as "same load list").
+  - The acceptance criterion about jobs waiting while the worker is stopped was not exercised as an automated test in this SI; the real-worker pipeline is covered by SI-03.13.
 
 ### SI-03.12 — Public Video Details, Streaming, Download and Thumbnail
 - **Status:** pending

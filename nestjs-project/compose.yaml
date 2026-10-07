@@ -17,6 +17,29 @@ services:
       minio:
         condition: service_healthy
 
+  # Consumes the video-processing queue (FFmpeg). Same image and code as the
+  # API, different entrypoint; exposes no port.
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/home/node/app
+    # node_modules lives in the bind mount and is installed through nestjs-api
+    # (`docker compose exec nestjs-api npm install`); wait for it on a fresh clone.
+    command: >
+      sh -c "until [ -d node_modules/@nestjs/bullmq ] && [ -d node_modules/ioredis ]; do
+      echo 'video-worker: waiting for npm install'; sleep 3; done;
+      exec npm run start:worker:dev"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
   db:
     image: postgres:17
     ports:
