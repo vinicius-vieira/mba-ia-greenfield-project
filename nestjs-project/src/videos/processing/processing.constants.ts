@@ -28,3 +28,6 @@ export const INVALID_MEDIA_STDERR_PATTERNS = [
   /moov atom not found/i,
   /could not find codec parameters/i,
 ] as const;
+
+/** Stored when processing fails for reasons unrelated to the file itself. */
+export const GENERIC_FAILURE_REASON = 'Video processing failed';

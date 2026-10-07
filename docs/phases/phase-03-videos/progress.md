@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 9/14 completed
+**SIs:** 10/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -72,9 +72,11 @@
   - First run had 1 failing test caused by a wrong assertion in the new spec (it assumed probing a JPEG fails); the assertion now checks the JPEG frame size.
 
 ### SI-03.10 — Video Processing Service, Processor and Failure Policy
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 28/28 passing in this SI's files (`video-processing.service.spec.ts` 10, `video-processing.service.integration-spec.ts` 8 with real DB + MinIO + FFmpeg, `video.processor.spec.ts` 9, `video-processing.module.spec.ts` 1); `src/videos/processing` total 53/53
+- **Observations:** 
+  - `failure_reason` carries the error text only for failures caused by the file (`InvalidMediaError`). When the last retry of a transient error fails, the stored reason is the fixed text `Video processing failed` and the detail goes to the worker log — FFmpeg's stderr quotes the presigned source URL, which must not be shown to the uploader. The plan said only "with `failure_reason`".
+  - First run had 1 failing test from a bug in the spec's own helper (a default parameter swallowed an explicit `undefined`); helper fixed, no production change.
 
 ### SI-03.11 — Video Worker Entrypoint and Compose Service
 - **Status:** pending
