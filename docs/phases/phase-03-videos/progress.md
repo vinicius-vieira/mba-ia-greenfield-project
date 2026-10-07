@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 8/14 completed
+**SIs:** 9/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -64,9 +64,12 @@
   - Compensation path covered end to end: a failed publish reverts the row to `draft` and a second `complete` call succeeds without re-assembling the object.
 
 ### SI-03.9 — Media Inspection with FFmpeg
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 25/25 passing (`ffprobe.parser.spec.ts` 17, `media-inspector.service.integration-spec.ts` 8 with real `ffprobe`/`ffmpeg` and a presigned MinIO URL as input)
+- **Observations:** 
+  - `MediaInspectorService` separates "not a video" from "could not read the input": only FFmpeg stderr matching known invalid-data messages becomes `InvalidMediaError` (unrecoverable); any other non-zero exit (storage unreachable, timeout) is a plain error so the queue retries it. The plan mapped every non-zero `ffprobe` exit to `InvalidMediaError`, which would have turned a storage outage into a permanent `failed`.
+  - Constants live in `src/videos/processing/processing.constants.ts` (not listed as a separate file in the plan).
+  - First run had 1 failing test caused by a wrong assertion in the new spec (it assumed probing a JPEG fails); the assertion now checks the JPEG frame size.
 
 ### SI-03.10 — Video Processing Service, Processor and Failure Policy
 - **Status:** pending
