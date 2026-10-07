@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 1/14 completed
+**SIs:** 2/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -11,9 +11,12 @@
   - `.env.example` still ships `MAIL_FROM="StreamTube" <noreply@streamtube.com>`, which Docker Compose cannot parse when copied to `.env` (`unexpected character "<"`); the local `.env` omits the line. Out of scope here — the fix is to quote the whole value as `nestjs-project/CLAUDE.md` → Environment File Conventions already describes.
 
 ### SI-03.2 — Infra: Compose Services, Image, Dependencies and Config Namespaces
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 11/11 passing (`env.validation.integration-spec.ts`); `test/app.e2e-spec.ts` 1/1 passing with the new variables; `npx tsc --noEmit` exit 0
+- **Observations:** 
+  - **MinIO image:** the plan assumed the official image, but `minio/minio` no longer exists on Docker Hub (`pull access denied … repository does not exist`) and `quay.io/minio/minio` answers 401. Compose uses `cgr.dev/chainguard/minio:latest` (the same MinIO server built from source by Chainguard; ships `mc`, used by the healthcheck). Only the `latest` tag is available without a Chainguard subscription, so the image is not pinned.
+  - Installed versions resolved by npm: `@nestjs/bullmq@^11.0.5`, `bullmq@^6.3.11`, `@aws-sdk/client-s3@^3.1147.0`, `@aws-sdk/s3-request-presigner@^3.1147.0`.
+  - `ffmpeg`/`ffprobe` 5.1.9 (Debian 12 package) verified inside `nestjs-api`.
 
 ### SI-03.3 — Storage Module (S3-Compatible Object Storage)
 - **Status:** pending
