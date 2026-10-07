@@ -7,8 +7,8 @@ sources_mtime:
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-10-07T00:41:06-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-10-07T00:41:06-03:00"
   docs/phases/phase-02-auth/context.md: "2026-10-07T00:41:06-03:00"
-  docs/phases/phase-03-videos/library-refs.md: "2026-10-07T01:28:36-03:00"
-  .claude/skills/testing-guide-nestjs-project/SKILL.md: "2026-10-07T00:41:06-03:00"
+  docs/phases/phase-03-videos/library-refs.md: "2026-10-07T01:41:15-03:00"
+  .claude/skills/testing-guide-nestjs-project/SKILL.md: "2026-10-07T02:01:12-03:00"
 ---
 
 # phase-03-videos — Context

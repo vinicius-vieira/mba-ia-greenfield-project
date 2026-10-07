@@ -13,6 +13,9 @@ docker compose ps   # all services must show status "running"
 Then verify each infrastructure service is actually ready to accept connections — not just running:
 
 - **PostgreSQL:** `docker compose exec db pg_isready -U streamtube` — expect `accepting connections`
+- **Redis:** `docker compose exec redis redis-cli ping` — expect `PONG`
+- **MinIO:** `docker compose exec minio mc ready local` — expect `The cluster 'local' is ready`
+- **Video worker:** `docker compose logs video-worker | grep "Video worker started"` — the worker is infrastructure for the upload flow and starts with `docker compose up -d` (unlike the API server, see below). On a fresh clone it logs `waiting for npm install` until dependencies are installed through `nestjs-api`.
 
 Only start the NestJS dev server (`npm run start:dev`) when the user **explicitly** asks to run the application — never as part of "start the environment".
 
@@ -32,8 +35,14 @@ docker compose exec nestjs-api npm run start:dev
 ```
 
 Services:
-- `nestjs-api` — NestJS API, port `3000`
+- `nestjs-api` — NestJS API, port `3000` (container idles; the server is started on demand)
+- `video-worker` — video processing worker (BullMQ consumer + FFmpeg), no port; runs `npm run start:worker:dev` from the same image and bind mount as `nestjs-api`
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `mailpit` — SMTP capture, ports `1025` (SMTP) and `8025` (web UI / API)
+- `redis` — Redis 7, port `6379`, backs the BullMQ queue
+- `minio` — S3-compatible object storage, port `9000` (API) and `9001` (console, user `streamtube` / password `streamtube-secret`). Image is `cgr.dev/chainguard/minio:latest` because the official `minio/minio` image is no longer published.
+
+The image (`Dockerfile.dev`) includes `ffmpeg`/`ffprobe`; after changing it run `docker compose up -d --build`.
 
 All verification and teardown commands run on the **host machine**:
 
@@ -63,10 +72,14 @@ npm run start:dev                        # Dev server with hot-reload
 npm run build                            # Compile to dist/
 npm run start:prod                       # Run compiled build
 
+npm run start:worker                     # Video worker, one-off (ts-node)
+npm run start:worker:dev                 # Video worker with reload (what the video-worker container runs)
+npm run start:worker:prod                # Video worker from the compiled build (dist/worker.js)
+
 npm test                                 # Unit tests
 npm run test:watch                       # Unit tests in watch mode
 npm run test:cov                         # Coverage report
-npm run test:e2e                         # End-to-end tests (always with --runInBand)
+npm run test:e2e                         # End-to-end tests (the script passes --runInBand)
 
 npx tsc --noEmit                         # Type-check (required before declaring a task done)
 npm run lint                             # ESLint with auto-fix
@@ -95,11 +108,23 @@ Parallel execution causes FK violations, deadlocks, and cross-suite contaminatio
 
 During active development, run only the tests related to the file being changed (`npm test -- path/to/file.spec.ts`). Before declaring a task done, run the full suite — see the global `CLAUDE.md` → "Definition of Done (Technical)".
 
+### Tests and the running infrastructure
+
+Storage, queue and FFmpeg are exercised for real — there is no filesystem storage adapter and no queue mock. Three helpers keep that safe next to a running stack:
+
+- `src/test/storage-test-env.ts` → `useInternalStorageEndpoint()` — presigned URLs for clients are signed for `STORAGE_PUBLIC_ENDPOINT` (`localhost:9000`), unreachable from inside the container; the helper points it at the internal endpoint for the test process. Call it **before** the Nest module is created. `createTestStorageService()` builds a `StorageService` for integration tests.
+- `src/test/queue-test-env.ts` → `useIsolatedQueuePrefix()` — gives the test process its own `QUEUE_PREFIX` so the `video-worker` container does not consume jobs a test wants to assert on; `emptyQueue(queue)` clears a queue between tests. Any test that compiles a module containing `VideoProcessor` (it starts a real BullMQ worker) must call it too.
+- `src/test/video-fixture.ts` → `generateSampleVideo()` — builds a small MP4 with FFmpeg; no binary fixtures are committed. `src/test/video-factory.ts` creates users/channels/videos directly in the database.
+
+`test/video-pipeline.e2e-spec.ts` is the one suite that deliberately keeps the default `QUEUE_PREFIX`: it needs the `video-worker` container running and fails after 90s when it is not.
+
+`createTestDataSource()` always registers every entity (`ALL_ENTITIES`), because TypeORM needs the whole relation graph; add new entities to that list and to `cleanAllTables()` in `src/test/create-test-data-source.ts`.
+
 ## Long-running Processes
 
 Commands that never exit (dev server, watch modes) must be run in background in the Bash tool — otherwise the agent blocks indefinitely waiting for the process to return.
 
-This applies to: `start:dev`, `start:prod`, `test:watch`, and any other persistent process.
+This applies to: `start:dev`, `start:prod`, `start:worker`, `start:worker:dev`, `test:watch`, and any other persistent process.
 
 ## Test Type Selection
 
@@ -136,6 +161,18 @@ MAIL_FROM=StreamTube <noreply@streamtube.local>
 MAIL_FROM="StreamTube <noreply@streamtube.local>"
 ```
 
+New in Phase 03 (all validated by `src/config/env.validation.ts`):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `STORAGE_ENDPOINT` | `http://minio:9000` | Storage URL used by the API and the worker (Compose service name) |
+| `STORAGE_PUBLIC_ENDPOINT` | `http://localhost:9000` | Host signed into presigned URLs handed to clients |
+| `STORAGE_REGION` | `us-east-1` | S3 region |
+| `STORAGE_ACCESS_KEY` / `STORAGE_SECRET_KEY` | — (required) | Storage credentials |
+| `STORAGE_BUCKET` | `streamtube` | Single private bucket; created at startup when missing |
+| `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | BullMQ connection |
+| `QUEUE_PREFIX` | `streamtube` | Redis key prefix of the queues; the API and the worker must share it |
+
 Whenever possible, prefer storing only the bare address in `.env` and composing display names in code (e.g., in `mail.config.ts`) so the file stays shell-safe.
 
 ## Build Assets
@@ -146,8 +183,47 @@ Whenever possible, prefer storing only the bare address in `.env` and composing 
 
 NestJS with standard module structure. Source lives in `src/`, compiled output in `dist/`.
 
-- Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
+- Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`; infrastructure wrappers (`StorageModule`, `QueueModule`, `DatabaseModule`) are imported by the modules that need them
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
+
+## Videos, Storage and Queue
+
+Two processes share this codebase: the API (`src/main.ts` → `AppModule`) and the video worker (`src/worker.ts` → `WorkerModule`, a Nest application context with no HTTP listener). Both load the same configuration (`src/config/config-module.options.ts`) and database connection (`src/database/database.module.ts`).
+
+| Path | Role |
+|------|------|
+| `src/videos/videos.controller.ts` | `@Controller('videos')`, `@SkipThrottle()`. Owner endpoints by uuid `:id`; public endpoints (`@Public()`) by `:publicId` |
+| `src/videos/videos.service.ts` | Upload lifecycle (initiate, part URLs, list parts, abort, complete + publish job) and public reads (details, stream/download/thumbnail URLs) |
+| `src/videos/entities/video.entity.ts` | `Video` (`videos` table), `VideoStatus`, `VideoMetadata`; belongs to `Channel` (`channel_id`, cascade delete) |
+| `src/videos/videos.constants.ts` | 10GB limit, 16MB part size, 1h presigned URL lifetime, public id alphabet/length |
+| `src/videos/video-public-id.util.ts` | 11-character URL-safe id; uniqueness comes from the unique index + retry in the service |
+| `src/videos/processing/` | Worker side only: `VideoProcessor` (BullMQ consumer, retry/failure policy), `VideoProcessingService` (`process`, `markFailed`), `MediaInspectorService` (`ffprobe`/`ffmpeg` via `execFile`), `ffprobe.parser.ts` |
+| `src/storage/` | `StorageService` — the only code that talks to the S3 SDK; key builders in `storage.constants.ts` (`videos/{videoId}/original`, `videos/{videoId}/thumbnail.jpg`) |
+| `src/queue/` | `QueueModule` (BullMQ root connection from `queueConfig`), queue/job names and job options in `queue.constants.ts` |
+
+Endpoints (contracts in `docs/phases/phase-03-videos/phase-03-videos.md` → API Contracts; exported to `openapi.json`):
+
+| Method and path | Auth | Purpose |
+|-----------------|------|---------|
+| `POST /videos` | Bearer | Initiate upload, create draft |
+| `GET /videos/:id/upload` | Owner | Upload/processing state |
+| `POST /videos/:id/upload/part-urls` | Owner | Presigned `PUT` URLs (≤ 100 parts per call) |
+| `GET /videos/:id/upload/parts` | Owner | Parts already in the storage (resume) |
+| `DELETE /videos/:id/upload` | Owner | Abort upload, delete draft |
+| `POST /videos/:id/upload/complete` | Owner | Assemble object, set `processing`, publish job |
+| `GET /videos/:publicId` | Public | Details of a `ready` video |
+| `GET /videos/:publicId/stream` · `/download` · `/thumbnail` | Public | `302` to a presigned storage URL |
+
+Things that are easy to get wrong:
+
+- **Never route file bytes through the API.** Uploads use presigned part URLs; playback/download are redirects. `StorageService.presignGetObject` takes an `audience`: `public` for URLs returned to clients, `internal` for URLs the worker hands to FFmpeg.
+- **`VideoProcessor` belongs to `VideoProcessingModule`, which only `WorkerModule` imports.** `VideosModule` registers the queue as a producer; importing the processing module into `AppModule` would make the API consume jobs.
+- **`upload_id` is `select: false`.** Load it explicitly (see `VideosService.findUploadId`) — a plain `findOne` returns `undefined` for it.
+- **Status changes are conditional updates** (`update({ id, status: <expected> }, …)`), because the API and the worker write the same row. Check `affected` when the outcome matters.
+- **Worker failures:** throw `InvalidMediaError` only for "this file is not a video" (no retry, reason shown to the owner). Any other error is retried by the queue and ends as the generic reason — FFmpeg's stderr contains the presigned source URL and must not reach `failure_reason`.
+- **FFmpeg runs as a child process** (`execFile`), never in-process, so the worker's event loop stays free to renew the job lock.
+- **`@nestjs/bullmq` is pinned to 11.x** (12.x is ESM-only; this project builds CommonJS), and `bullmq@6` needs `ioredis` installed explicitly.
+- **`openapi.json` request bodies are exported empty** (`npm run openapi:export` runs under ts-node, where the Swagger CLI plugin does not run). Paths and response DTOs are complete. After changing a controller: `npm run openapi:export`, then `scripts/sync-openapi.sh` from the repo root.
 
 ## Code Conventions
 

@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
-**Status:** in_progress
-**SIs:** 13/14 completed
+**Status:** completed
+**SIs:** 14/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -102,6 +102,9 @@
   - The pipeline spec depends on the `video-worker` container being up; when it is not, the test fails after 90s with a message pointing to `docker compose ps`.
 
 ### SI-03.14 — AI Foundation and Documentation Update
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** no tests (documentation only); final verification after this SI: `npm test -- --runInBand` 306/306 (39 suites), `npm run test:e2e` 118/118 (5 suites), `npx tsc --noEmit` exit 0, `npm run lint` exit 0, `npm run build` exit 0
+- **Observations:** 
+  - `nestjs-project/README.md` was left untouched: it is still the stock NestJS starter README and has no project setup notes to update (the plan assumed it had). Setup for the new services is documented in `nestjs-project/CLAUDE.md`.
+  - Also updated in the testing guide: `SKILL.md` (two rows naming the storage strategy) and `artifacts/services.md` (two lines that still prescribed a local storage adapter), besides `references/external-systems.md` named in the plan.
+  - `sources_mtime` in `context.md`, `validation.md` and the plan were re-stamped at the end of the phase: `library-refs.md` (ioredis note, SI-03.4) and the testing-guide skill (this SI) changed as outputs of the implementation, not as new planning inputs.

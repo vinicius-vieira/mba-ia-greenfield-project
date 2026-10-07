@@ -3,14 +3,14 @@ kind: phase
 name: phase-03-videos
 test_specs_aware: true
 sources_mtime:
-  docs/phases/phase-03-videos/context.md: "2026-10-07T01:28:36-03:00"
-  docs/phases/phase-03-videos/library-refs.md: "2026-10-07T01:28:36-03:00"
+  docs/phases/phase-03-videos/context.md: "2026-10-07T02:02:10-03:00"
+  docs/phases/phase-03-videos/library-refs.md: "2026-10-07T01:41:15-03:00"
   docs/project-plan.md: "2026-10-07T00:41:06-03:00"
   docs/decisions/technical-decisions-phase-03-videos.md: "2026-10-07T01:27:40-03:00"
   docs/decisions/technical-decisions-openapi-docs-nestjs.md: "2026-10-07T00:41:06-03:00"
   docs/phases/phase-01-configuracao-base/context.md: "2026-10-07T00:41:06-03:00"
   docs/phases/phase-02-auth/context.md: "2026-10-07T00:41:06-03:00"
-  .claude/skills/testing-guide-nestjs-project/SKILL.md: "2026-10-07T00:41:06-03:00"
+  .claude/skills/testing-guide-nestjs-project/SKILL.md: "2026-10-07T02:01:12-03:00"
 ---
 
 # Phase 03 — Upload e Processamento de Vídeos
@@ -811,25 +811,25 @@ Linearized implementation order: SI-03.1 → SI-03.2 → SI-03.3 → SI-03.4 →
 
 ## Deliverables
 
-- [ ] SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
-- [ ] SI-03.2 — Infra: Compose Services, Image, Dependencies and Config Namespaces
-- [ ] SI-03.3 — Storage Module (S3-Compatible Object Storage)
-- [ ] SI-03.4 — Queue Module (BullMQ Connection)
-- [ ] SI-03.5 — Video Entity and Migration
-- [ ] SI-03.6 — Upload Initiation with Draft Pre-registration
-- [ ] SI-03.7 — Upload Parts: Presigned URLs, Resume, State and Abort
-- [ ] SI-03.8 — Upload Completion and Processing Job Publishing
-- [ ] SI-03.9 — Media Inspection with FFmpeg
-- [ ] SI-03.10 — Video Processing Service, Processor and Failure Policy
-- [ ] SI-03.11 — Video Worker Entrypoint and Compose Service
-- [ ] SI-03.12 — Public Video Details, Streaming, Download and Thumbnail
-- [ ] SI-03.13 — End-to-End Pipeline Through the Real Worker and Contract Export
-- [ ] SI-03.14 — AI Foundation and Documentation Update
+- [x] SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
+- [x] SI-03.2 — Infra: Compose Services, Image, Dependencies and Config Namespaces
+- [x] SI-03.3 — Storage Module (S3-Compatible Object Storage)
+- [x] SI-03.4 — Queue Module (BullMQ Connection)
+- [x] SI-03.5 — Video Entity and Migration
+- [x] SI-03.6 — Upload Initiation with Draft Pre-registration
+- [x] SI-03.7 — Upload Parts: Presigned URLs, Resume, State and Abort
+- [x] SI-03.8 — Upload Completion and Processing Job Publishing
+- [x] SI-03.9 — Media Inspection with FFmpeg
+- [x] SI-03.10 — Video Processing Service, Processor and Failure Policy
+- [x] SI-03.11 — Video Worker Entrypoint and Compose Service
+- [x] SI-03.12 — Public Video Details, Streaming, Download and Thumbnail
+- [x] SI-03.13 — End-to-End Pipeline Through the Real Worker and Contract Export
+- [x] SI-03.14 — AI Foundation and Documentation Update
 
 **Full test suites:**
 
-- [ ] Backend tests pass (`cd nestjs-project && docker compose exec nestjs-api npm test -- --runInBand`)
-- [ ] E2E tests pass (`cd nestjs-project && docker compose exec nestjs-api npm run test:e2e`)
-- [ ] Type/compilation checks pass (`cd nestjs-project && docker compose exec nestjs-api npx tsc --noEmit`)
-- [ ] Lint passes (`cd nestjs-project && docker compose exec nestjs-api npm run lint`)
-- [ ] Project builds successfully (`cd nestjs-project && docker compose exec nestjs-api npm run build`)
+- [x] Backend tests pass (`cd nestjs-project && docker compose exec nestjs-api npm test -- --runInBand`)
+- [x] E2E tests pass (`cd nestjs-project && docker compose exec nestjs-api npm run test:e2e`)
+- [x] Type/compilation checks pass (`cd nestjs-project && docker compose exec nestjs-api npx tsc --noEmit`)
+- [x] Lint passes (`cd nestjs-project && docker compose exec nestjs-api npm run lint`)
+- [x] Project builds successfully (`cd nestjs-project && docker compose exec nestjs-api npm run build`)

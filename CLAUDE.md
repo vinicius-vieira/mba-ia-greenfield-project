@@ -10,32 +10,52 @@ More info in the project overview: [docs/project-plan.md](docs/project-plan.md)
 
 This is a monorepo with two main areas:
 
-- `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
+- `nestjs-project/` — Backend (NestJS 11, TypeScript, Express): the REST API and the video worker, two processes built from the same codebase. Modules today: `auth`, `users`, `channels`, `mail`, `videos`, `storage`, `queue`.
+- `next-frontend/` — Frontend (Next.js): auth screens of Phase 02. No video UI yet.
 - `docs/` — Project documentation, architecture diagrams, and planning.
-- `next-frontend/` (Next.js) — not yet initialized
 
 ## Architecture (C4 Container Diagram)
 
 See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
 - **Frontend** (Next.js) → calls API via REST, streams from Object Storage
-- **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
+- **API** (Nest.js) → business rules, auth, reads/writes DB, opens uploads in the storage and signs storage URLs, publishes jobs to queue, sends emails
 - **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
-- **Database** (PostgreSQL) → users, channels, videos, comments, likes
-- **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Database** (PostgreSQL) → users, channels, videos (comments and likes arrive in later phases)
+- **Object Storage** (S3/MinIO) → video files and thumbnails; clients upload to and stream from it directly through presigned URLs
+- **Message Queue** (BullMQ on Redis) → video processing job queue
 - **Email Service** (SMTP) → account confirmation and password recovery
+
+## Videos (Phase 03 — Upload and Processing)
+
+Decisions: `docs/decisions/technical-decisions-phase-03-videos.md`. Plan and contracts (Data Model, API Contracts, Error Catalog, Events/Messages): `docs/phases/phase-03-videos/phase-03-videos.md`. Operational detail (commands, env vars, test helpers): `nestjs-project/CLAUDE.md` → "Videos, Storage and Queue".
+
+**Rule that shapes everything here: video bytes never pass through the API.** Uploads go from the client to the object storage through presigned multipart part URLs; playback and download are `302` redirects to presigned storage URLs (the storage answers `Range` requests with `206`). Do not add an endpoint that receives or pipes a video file.
+
+Flow:
+
+1. `POST /videos` — pre-registers the video as `draft` (owned by the caller's channel, with an 11-character unique `public_id`) and opens a multipart upload in the storage. Max size 10GB, fixed 16MB parts.
+2. `POST /videos/:id/upload/part-urls` → the client `PUT`s each part to the storage. `GET /videos/:id/upload/parts` lists received parts (resume). `DELETE /videos/:id/upload` aborts.
+3. `POST /videos/:id/upload/complete` — assembles the object, confirms its size, sets `processing` and publishes the `process-video` job (queue `video-processing`, `jobId` = video id, 3 attempts, exponential backoff).
+4. The **video worker** (separate container `video-worker`, entrypoint `nestjs-project/src/worker.ts`) reads the object through an internal presigned URL with `ffprobe`/`ffmpeg`, stores duration + metadata + a JPEG thumbnail, and sets `ready` — or `failed` with `failure_reason` (immediately for a file that is not a video, otherwise after the last retry).
+5. `GET /videos/:id/upload` — the owner follows the status. Public, by `public_id`, only for `ready` videos: `GET /videos/:publicId`, `/stream`, `/download`, `/thumbnail`.
+
+Status lifecycle: `draft → processing → ready | failed`. Each transition has one writer (API for `draft`/`processing`, worker for `ready`/`failed`) and is applied with a conditional update on the current status — keep it that way when adding transitions.
+
+Access in this phase: upload endpoints are owner-only (`403 VIDEO_NOT_OWNED` otherwise); a video that is not `ready` is invisible on the public endpoints (`404 VIDEO_NOT_FOUND`). Visibility (public/unlisted) and publication belong to Phase 04.
 
 ## Docker Networking
 
 This project runs entirely in Docker containers. When configuring connections between services (database, cache, queue, etc.), **always use the Docker Compose service name** as the host — never `localhost` or `127.0.0.1`.
 
-Inside a container, `localhost` refers to the container itself, not the host machine or other containers. Services communicate through the Docker Compose network using their service names (e.g., `db`, `nestjs-api`).
+Inside a container, `localhost` refers to the container itself, not the host machine or other containers. Services communicate through the Docker Compose network using their service names (e.g., `db`, `redis`, `minio`, `nestjs-api`).
 
 - **Correct:** `DB_HOST=db` (the Compose service name)
 - **Wrong:** `DB_HOST=localhost`
 
 This applies to all environment variables, configuration files, and code that references service hosts.
+
+One deliberate exception: `STORAGE_PUBLIC_ENDPOINT` is the host written into presigned URLs that are handed to clients **outside** the Compose network (a browser), so in local development it is `http://localhost:9000`. Everything the API and the worker call themselves uses `STORAGE_ENDPOINT=http://minio:9000`.
 
 ## Working Principles
 

@@ -37,89 +37,70 @@ How each external system is handled in tests. These strategies were confirmed wi
 
 ---
 
-## Object Storage — Local Filesystem
+## Object Storage — Real S3-Compatible Service (MinIO in Docker)
 
-**Strategy:** Local filesystem storage in development and tests. S3 in production.
+**Strategy:** Real storage via the Docker `minio` service (in `compose.yaml`). No filesystem adapter and no SDK mock: multipart uploads and presigned URLs — the core of the upload and streaming flows — only exist against a real S3 API. Production uses S3 with the same code.
 
-**Approach:**
-- The storage layer should use an abstraction (e.g., `StorageService` interface) that allows switching between local filesystem and S3
-- In tests, use the local filesystem adapter — no mocking needed
-- Use a temporary directory for test uploads: `os.tmpdir()` or a dedicated `test-uploads/` directory
-- Clean up test files in `afterAll`
+**Setup:**
+- Integration tests build the service directly: `const storage = await createTestStorageService()` (`src/test/storage-test-env.ts`). It reads the `STORAGE_*` variables from `.env` and ensures the bucket exists.
+- E2E tests (and any test that compiles a module with `StorageService`) call `useInternalStorageEndpoint()` **before** creating the Nest module. Presigned URLs for clients are signed for `STORAGE_PUBLIC_ENDPOINT` (`http://localhost:9000`), which is not reachable from inside the container; the helper points it at the internal endpoint for the test process.
 
-**Setup pattern:**
+**Test isolation:**
+- Use unique keys per test (`test/${randomUUID()}` or the video id) and delete the objects you created in `afterAll`.
+- A test that creates its own bucket must delete it (see `storage.service.integration-spec.ts`).
+
+**What to assert:**
+- Dereference the presigned URL with `fetch` instead of inspecting its text: `PUT` the part and read the `ETag`; `GET` with a `Range` header and expect `206` + `Content-Range`; check `Content-Disposition` on download URLs.
+- For service unit tests (`*.spec.ts`), mock `StorageService` at the boundary — it is an owned service with its own integration tests.
+
 ```typescript
-// In test module setup
-{
-  provide: 'STORAGE_CONFIG',
-  useValue: {
-    driver: 'local',
-    basePath: path.join(os.tmpdir(), 'streamtube-test-uploads'),
-  },
-}
-```
-
-**Integration test:**
-```typescript
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-
 describe('StorageService (integration)', () => {
-  const testDir = path.join(os.tmpdir(), 'streamtube-test-uploads');
+  let storage: StorageService;
 
-  afterAll(() => {
-    fs.rmSync(testDir, { recursive: true, force: true });
+  beforeAll(async () => {
+    storage = await createTestStorageService();
   });
 
-  it('should upload and retrieve a file', async () => {
-    const buffer = Buffer.from('test content');
-    const key = await storageService.upload(buffer, 'test.txt');
+  it('should serve a byte range with 206 Partial Content', async () => {
+    const key = `test/${randomUUID()}`;
+    await storage.putObject(key, Buffer.from('0123456789abcdef'), 'video/mp4');
+    const url = await storage.presignGetObject(key, {
+      expiresIn: 60,
+      audience: 'internal',
+    });
 
-    const retrieved = await storageService.get(key);
-    expect(retrieved.toString()).toBe('test content');
+    const res = await fetch(url, { headers: { Range: 'bytes=0-9' } });
+
+    expect(res.status).toBe(206);
   });
 });
 ```
 
 ---
 
-## Message Queue — Real (Docker)
+## Message Queue — Real BullMQ on Redis (Docker)
 
-**Strategy:** Real message broker in Docker. The specific technology is TBD per the architecture diagram (likely BullMQ with Redis or RabbitMQ).
+**Strategy:** Real broker via the Docker `redis` service (in `compose.yaml`), through `@nestjs/bullmq`. No queue mock in integration/E2E tests.
 
-**When the queue technology is chosen, configure:**
-- A queue broker service in `compose.yaml` (e.g., Redis for BullMQ, RabbitMQ for AMQP)
-- Test isolation: use dedicated test queues or clean queues between tests
-- For publisher tests: assert the job is enqueued with correct data
-- For consumer tests: submit a job and assert the processing outcome
+**Test isolation — the worker container is running:**
+- The `video-worker` container consumes the `video-processing` queue under the default `QUEUE_PREFIX`. A test that asserts on an enqueued job must call `useIsolatedQueuePrefix()` (`src/test/queue-test-env.ts`) **before** the module/config is created, so its jobs live under a prefix no worker listens to.
+- Clear the queue between tests with `emptyQueue(queue)`; never obliterate a queue under the default prefix.
+- Compiling a module that contains a `@Processor` class starts a real worker — such module compilation tests also need `useIsolatedQueuePrefix()`.
+- The single exception is `test/video-pipeline.e2e-spec.ts`, which keeps the default prefix on purpose so the real `video-worker` container (with FFmpeg) processes the job, and polls the API until the video is `ready`/`failed`.
 
-**Setup pattern (BullMQ example):**
-```typescript
-// In test module
-BullModule.forRoot({
-  connection: {
-    host: process.env.REDIS_HOST ?? 'localhost',
-    port: Number(process.env.REDIS_PORT ?? 6379),
-  },
-}),
-BullModule.registerQueue({ name: 'video-processing' }),
-```
+**Publisher tests:** assert the job in the queue (name, data, `jobId`, options).
 
 ```typescript
-describe('VideoService (integration - queue)', () => {
-  it('should enqueue a processing job on upload', async () => {
-    await videoService.upload(videoData);
-
-    const queue = module.get<Queue>(getQueueToken('video-processing'));
-    const jobs = await queue.getJobs(['waiting']);
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].data).toEqual(
-      expect.objectContaining({ videoId: expect.any(String) }),
-    );
-  });
-});
+const queue = app.get<Queue>(getQueueToken(VIDEO_PROCESSING_QUEUE));
+const jobs = await queue.getJobs(['waiting']);
+expect(jobs).toHaveLength(1);
+expect(jobs[0].id).toBe(videoId);
+expect(jobs[0].data).toEqual({ videoId });
 ```
+
+**Consumer tests:** call the service the processor delegates to (`VideoProcessingService.process(videoId)`) against real DB + storage + FFmpeg, and unit-test the processor class for the retry/failure policy (`onFailed` with `attemptsMade` vs `opts.attempts`, `UnrecoverableError`).
+
+**Media fixtures:** `generateSampleVideo()` (`src/test/video-fixture.ts`) produces a small MP4 with FFmpeg's synthetic sources. Do not commit binary video files.
 
 ---
 
