@@ -29,6 +29,7 @@ import {
 } from './dto/complete-upload.dto';
 import { PartUrlsDto, UploadedPartsDto } from './dto/create-part-urls.dto';
 import { InitiateUploadDto } from './dto/initiate-upload.dto';
+import { VideoDetailsDto } from './dto/video-details.dto';
 import {
   UploadInitiatedDto,
   UploadPlanDto,
@@ -50,6 +51,19 @@ export function uploadPlanFor(size: number): UploadPlanDto {
     part_size: UPLOAD_PART_SIZE_BYTES,
     part_count: Math.ceil(size / UPLOAD_PART_SIZE_BYTES),
   };
+}
+
+/**
+ * `Content-Disposition` for a download: an ASCII-only fallback name plus the
+ * exact name in RFC 5987 form for clients that understand it.
+ */
+export function attachmentDisposition(filename: string): string {
+  const fallback = filename.replace(/[^\w.\- ]/g, '_');
+  const encoded = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
 function defaultTitle(filename: string): string {
@@ -268,6 +282,74 @@ export class VideosService {
       public_id: video.public_id,
       status: VideoStatus.PROCESSING,
     };
+  }
+
+  /**
+   * The video behind a public URL. Only `ready` videos are public; anything
+   * else is indistinguishable from an unknown id.
+   */
+  async findReadyByPublicId(publicId: string): Promise<Video> {
+    const video = await this.videoRepository.findOne({
+      where: { public_id: publicId, status: VideoStatus.READY },
+      relations: ['channel'],
+    });
+    if (!video) {
+      throw new VideoNotFoundException();
+    }
+    return video;
+  }
+
+  async getPublicDetails(publicId: string): Promise<VideoDetailsDto> {
+    const video = await this.findReadyByPublicId(publicId);
+    if (video.duration === null || video.metadata === null) {
+      // A ready video always has both; treat a broken row as absent.
+      throw new VideoNotFoundException();
+    }
+    return {
+      public_id: video.public_id,
+      title: video.title,
+      duration: video.duration,
+      metadata: video.metadata,
+      size: video.size,
+      channel: {
+        nickname: video.channel.nickname,
+        name: video.channel.name,
+      },
+      created_at: video.created_at,
+    };
+  }
+
+  /** Presigned URL the player streams from (the storage serves byte ranges). */
+  async getStreamUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storageService.presignGetObject(video.storage_key, {
+      expiresIn: PRESIGNED_URL_TTL_SECONDS,
+      audience: 'public',
+      responseContentType: video.content_type,
+    });
+  }
+
+  async getDownloadUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    return this.storageService.presignGetObject(video.storage_key, {
+      expiresIn: PRESIGNED_URL_TTL_SECONDS,
+      audience: 'public',
+      responseContentType: video.content_type,
+      responseContentDisposition: attachmentDisposition(
+        video.original_filename,
+      ),
+    });
+  }
+
+  async getThumbnailUrl(publicId: string): Promise<string> {
+    const video = await this.findReadyByPublicId(publicId);
+    if (!video.thumbnail_key) {
+      throw new VideoNotFoundException();
+    }
+    return this.storageService.presignGetObject(video.thumbnail_key, {
+      expiresIn: PRESIGNED_URL_TTL_SECONDS,
+      audience: 'public',
+    });
   }
 
   private async assembleObject(

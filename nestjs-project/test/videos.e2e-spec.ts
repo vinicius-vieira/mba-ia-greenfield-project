@@ -8,7 +8,9 @@ import { DataSource, Repository } from 'typeorm';
 import { cleanAllTables } from '../src/test/create-test-data-source';
 import { VIDEO_PROCESSING_QUEUE } from '../src/queue/queue.constants';
 import { emptyQueue, useIsolatedQueuePrefix } from '../src/test/queue-test-env';
+import { StorageService } from '../src/storage/storage.service';
 import { useInternalStorageEndpoint } from '../src/test/storage-test-env';
+import { createVideo } from '../src/test/video-factory';
 import { Video, VideoStatus } from '../src/videos/entities/video.entity';
 import {
   AuthenticatedUser,
@@ -464,5 +466,144 @@ describe('Videos (e2e)', () => {
 
       expect(res.body.error).toBe('VIDEO_NOT_OWNED');
     });
+  });
+
+  describe('public video endpoints', () => {
+    const body = Buffer.from('0123456789'.repeat(50));
+    const thumbnail = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    let storage: StorageService;
+
+    beforeAll(() => {
+      storage = app.get(StorageService);
+    });
+
+    async function givenVideo(status: VideoStatus): Promise<Video> {
+      const video = await createVideo(dataSource, owner.channel.id, {
+        status,
+        size: body.length,
+        original_filename: 'my clip.mp4',
+        duration: 2,
+        metadata: {
+          width: 320,
+          height: 240,
+          video_codec: 'h264',
+          audio_codec: 'aac',
+          bitrate: 1000,
+          frame_rate: 10,
+          container_format: 'mov,mp4',
+        },
+      });
+      await storage.putObject(video.storage_key, body, 'video/mp4');
+      const thumbnailKey = `videos/${video.id}/thumbnail.jpg`;
+      await storage.putObject(thumbnailKey, thumbnail, 'image/jpeg');
+      await videoRepository.update(
+        { id: video.id },
+        { thumbnail_key: thumbnailKey },
+      );
+      return video;
+    }
+
+    it('GET /videos/:publicId returns public details without a token', async () => {
+      const video = await givenVideo(VideoStatus.READY);
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${video.public_id}`)
+        .expect(200);
+
+      expect(res.body).toEqual({
+        public_id: video.public_id,
+        title: 'Sample clip',
+        duration: 2,
+        metadata: {
+          width: 320,
+          height: 240,
+          video_codec: 'h264',
+          audio_codec: 'aac',
+          bitrate: 1000,
+          frame_rate: 10,
+          container_format: 'mov,mp4',
+        },
+        size: body.length,
+        channel: {
+          nickname: owner.channel.nickname,
+          name: owner.channel.name,
+        },
+        created_at: expect.any(String),
+      });
+    });
+
+    it('GET stream redirects to a storage URL that serves byte ranges', async () => {
+      const video = await givenVideo(VideoStatus.READY);
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${video.public_id}/stream`)
+        .expect(302);
+      const ranged = await fetch(res.headers.location, {
+        headers: { Range: 'bytes=0-99' },
+      });
+
+      expect(new URL(res.headers.location).host).toBe(
+        new URL(process.env.STORAGE_ENDPOINT as string).host,
+      );
+      expect(ranged.status).toBe(206);
+      expect(ranged.headers.get('content-range')).toBe(
+        `bytes 0-99/${body.length}`,
+      );
+      expect((await ranged.arrayBuffer()).byteLength).toBe(100);
+    });
+
+    it('GET download redirects to a storage URL served as an attachment', async () => {
+      const video = await givenVideo(VideoStatus.READY);
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${video.public_id}/download`)
+        .expect(302);
+      const file = await fetch(res.headers.location);
+
+      expect(file.status).toBe(200);
+      expect(file.headers.get('content-disposition')).toMatch(
+        /^attachment; filename="my clip\.mp4"/,
+      );
+      expect(Buffer.from(await file.arrayBuffer())).toEqual(body);
+    });
+
+    it('GET thumbnail redirects to the stored JPEG', async () => {
+      const video = await givenVideo(VideoStatus.READY);
+
+      const res = await request(app.getHttpServer())
+        .get(`/videos/${video.public_id}/thumbnail`)
+        .expect(302);
+      const image = await fetch(res.headers.location);
+
+      expect(image.status).toBe(200);
+      expect(image.headers.get('content-type')).toBe('image/jpeg');
+    });
+
+    describe.each(['', '/stream', '/download', '/thumbnail'])(
+      'GET /videos/:publicId%s',
+      (suffix) => {
+        it.each([
+          VideoStatus.DRAFT,
+          VideoStatus.PROCESSING,
+          VideoStatus.FAILED,
+        ])('returns 404 VIDEO_NOT_FOUND for a %s video', async (status) => {
+          const video = await givenVideo(status);
+
+          const res = await request(app.getHttpServer())
+            .get(`/videos/${video.public_id}${suffix}`)
+            .expect(404);
+
+          expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+        });
+
+        it('returns 404 VIDEO_NOT_FOUND for an unknown public id', async () => {
+          const res = await request(app.getHttpServer())
+            .get(`/videos/AAAAAAAAAAA${suffix}`)
+            .expect(404);
+
+          expect(res.body.error).toBe('VIDEO_NOT_FOUND');
+        });
+      },
+    );
   });
 });

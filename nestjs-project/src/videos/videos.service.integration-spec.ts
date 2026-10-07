@@ -7,6 +7,7 @@ import {
   ChannelNotFoundException,
   InvalidUploadPartsException,
   UploadSizeMismatchException,
+  VideoNotFoundException,
   VideoUploadNotInProgressException,
   VideoNotOwnedException,
 } from '../common/exceptions/domain.exception';
@@ -23,7 +24,7 @@ import {
 } from '../test/create-test-data-source';
 import { emptyQueue, useIsolatedQueuePrefix } from '../test/queue-test-env';
 import { createTestStorageService } from '../test/storage-test-env';
-import { createUserWithChannel } from '../test/video-factory';
+import { createUserWithChannel, createVideo } from '../test/video-factory';
 import { User } from '../users/entities/user.entity';
 import { Video, VideoStatus } from './entities/video.entity';
 import { VideosService } from './videos.service';
@@ -288,5 +289,91 @@ describe('VideosService (integration)', () => {
       expect(await queue.getJobCounts('waiting')).toEqual({ waiting: 1 });
       publish.mockRestore();
     });
+  });
+
+  describe('public operations', () => {
+    const body = Buffer.from('0123456789'.repeat(50));
+
+    async function givenStoredVideo(
+      overrides: Partial<Video> = {},
+    ): Promise<Video> {
+      const video = await createVideo(dataSource, channel.id, {
+        status: VideoStatus.READY,
+        size: body.length,
+        duration: 2,
+        metadata: {
+          width: 320,
+          height: 240,
+          video_codec: 'h264',
+          audio_codec: 'aac',
+          bitrate: 1000,
+          frame_rate: 10,
+          container_format: 'mov,mp4',
+        },
+        ...overrides,
+      });
+      await storage.putObject(
+        video.storage_key,
+        body,
+        'application/octet-stream',
+      );
+      return video;
+    }
+
+    it('should return details with the owning channel', async () => {
+      const video = await givenStoredVideo();
+
+      const details = await service.getPublicDetails(video.public_id);
+
+      expect(details.public_id).toBe(video.public_id);
+      expect(details.channel).toEqual({
+        nickname: channel.nickname,
+        name: channel.name,
+      });
+      expect(details).not.toHaveProperty('storage_key');
+    });
+
+    it('should issue a stream URL that serves a byte range as 206', async () => {
+      const video = await givenStoredVideo();
+
+      const url = await service.getStreamUrl(video.public_id);
+      const res = await fetch(url, { headers: { Range: 'bytes=0-99' } });
+
+      expect(res.status).toBe(206);
+      expect(res.headers.get('content-range')).toBe(
+        `bytes 0-99/${body.length}`,
+      );
+      expect(res.headers.get('content-type')).toBe('video/mp4');
+      expect((await res.arrayBuffer()).byteLength).toBe(100);
+    });
+
+    it('should issue a download URL served as an attachment', async () => {
+      const video = await givenStoredVideo({
+        original_filename: 'my clip.mp4',
+      });
+
+      const url = await service.getDownloadUrl(video.public_id);
+      const res = await fetch(url);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-disposition')).toBe(
+        `attachment; filename="my clip.mp4"; filename*=UTF-8''my%20clip.mp4`,
+      );
+      expect((await res.arrayBuffer()).byteLength).toBe(body.length);
+    });
+
+    it.each([VideoStatus.DRAFT, VideoStatus.PROCESSING, VideoStatus.FAILED])(
+      'should hide a %s video',
+      async (status) => {
+        const video = await givenStoredVideo({ status });
+
+        await expect(
+          service.getPublicDetails(video.public_id),
+        ).rejects.toBeInstanceOf(VideoNotFoundException);
+        await expect(
+          service.getStreamUrl(video.public_id),
+        ).rejects.toBeInstanceOf(VideoNotFoundException);
+      },
+    );
   });
 });

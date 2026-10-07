@@ -9,6 +9,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Redirect,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -20,6 +21,7 @@ import {
 import { SkipThrottle } from '@nestjs/throttler';
 import type { JwtPayload } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Public } from '../auth/decorators/public.decorator';
 import { ApiErrorEnvelope } from '../common/openapi/api-error-envelope.dto';
 import {
   CompleteUploadDto,
@@ -32,6 +34,7 @@ import {
 } from './dto/create-part-urls.dto';
 import { InitiateUploadDto } from './dto/initiate-upload.dto';
 import { UploadInitiatedDto, UploadStateDto } from './dto/upload-state.dto';
+import { VideoDetailsDto } from './dto/video-details.dto';
 import { VideosService } from './videos.service';
 
 const errorSchema = { $ref: getSchemaPath(ApiErrorEnvelope) };
@@ -60,6 +63,34 @@ function ApiOwnerErrors(): MethodDecorator {
       schema: errorSchema,
     }),
   );
+}
+
+/** Response pair of the public endpoints that redirect to the storage. */
+function ApiStorageRedirect(target: string): MethodDecorator {
+  return applyDecorators(
+    ApiResponse({
+      status: 302,
+      description: `Redirect to a presigned storage URL for the ${target}, valid for one hour`,
+    }),
+    ApiVideoNotFound(),
+  );
+}
+
+function ApiVideoNotFound(): MethodDecorator {
+  return ApiResponse({
+    status: 404,
+    description: 'Unknown public id, or the video is not ready',
+    schema: errorSchema,
+  });
+}
+
+interface RedirectResponse {
+  url: string;
+  statusCode: number;
+}
+
+function redirectTo(url: string): RedirectResponse {
+  return { url, statusCode: HttpStatus.FOUND };
 }
 
 function ApiUploadNotInProgress(): MethodDecorator {
@@ -203,5 +234,63 @@ export class VideosController {
     @Body() dto: CompleteUploadDto,
   ): Promise<UploadCompletedDto> {
     return this.videosService.completeUpload(user.sub, id, dto.parts);
+  }
+
+  @Public()
+  @Get(':publicId')
+  @ApiOperation({
+    summary: 'Get video details',
+    description:
+      'Public details of a processed video, addressed by its unique URL identifier.',
+  })
+  @ApiResponse({ status: 200, type: VideoDetailsDto })
+  @ApiVideoNotFound()
+  async getDetails(
+    @Param('publicId') publicId: string,
+  ): Promise<VideoDetailsDto> {
+    return this.videosService.getPublicDetails(publicId);
+  }
+
+  @Public()
+  @Get(':publicId/stream')
+  @Redirect()
+  @ApiOperation({
+    summary: 'Stream a video',
+    description:
+      'Redirects to a presigned storage URL. The storage answers Range requests with 206 Partial Content, so playback starts without downloading the whole file.',
+  })
+  @ApiStorageRedirect('video file')
+  async stream(@Param('publicId') publicId: string): Promise<RedirectResponse> {
+    return redirectTo(await this.videosService.getStreamUrl(publicId));
+  }
+
+  @Public()
+  @Get(':publicId/download')
+  @Redirect()
+  @ApiOperation({
+    summary: 'Download a video',
+    description:
+      'Redirects to a presigned storage URL that serves the original file as an attachment named after the uploaded file.',
+  })
+  @ApiStorageRedirect('video file (as attachment)')
+  async download(
+    @Param('publicId') publicId: string,
+  ): Promise<RedirectResponse> {
+    return redirectTo(await this.videosService.getDownloadUrl(publicId));
+  }
+
+  @Public()
+  @Get(':publicId/thumbnail')
+  @Redirect()
+  @ApiOperation({
+    summary: 'Get a video thumbnail',
+    description:
+      'Redirects to a presigned storage URL for the JPEG thumbnail generated during processing.',
+  })
+  @ApiStorageRedirect('thumbnail')
+  async thumbnail(
+    @Param('publicId') publicId: string,
+  ): Promise<RedirectResponse> {
+    return redirectTo(await this.videosService.getThumbnailUrl(publicId));
   }
 }

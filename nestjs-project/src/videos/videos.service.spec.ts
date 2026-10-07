@@ -10,7 +10,7 @@ import {
 import { InvalidMultipartPartsError } from '../storage/storage.errors';
 import { buildVideo } from '../test/video-factory';
 import { Video, VideoStatus } from './entities/video.entity';
-import { VideosService } from './videos.service';
+import { attachmentDisposition, VideosService } from './videos.service';
 
 const USER_ID = 'user-1';
 const CHANNEL_ID = 'channel-1';
@@ -43,6 +43,7 @@ describe('VideosService', () => {
     deleteObject: jest.Mock;
     completeMultipartUpload: jest.Mock;
     headObject: jest.Mock;
+    presignGetObject: jest.Mock;
   };
   let processingQueue: { add: jest.Mock };
 
@@ -68,6 +69,7 @@ describe('VideosService', () => {
       deleteObject: jest.fn().mockResolvedValue(undefined),
       completeMultipartUpload: jest.fn().mockResolvedValue(undefined),
       headObject: jest.fn().mockResolvedValue(null),
+      presignGetObject: jest.fn(),
     };
     processingQueue = { add: jest.fn().mockResolvedValue(undefined) };
     service = new VideosService(
@@ -575,6 +577,174 @@ describe('VideosService', () => {
       expect(storageService.completeMultipartUpload).not.toHaveBeenCalled();
       expect(processingQueue.add).toHaveBeenCalledTimes(1);
       expect(result.status).toBe(VideoStatus.PROCESSING);
+    });
+  });
+
+  describe('public operations', () => {
+    const metadata = {
+      width: 320,
+      height: 240,
+      video_codec: 'h264',
+      audio_codec: null,
+      bitrate: 1000,
+      frame_rate: 10,
+      container_format: 'mov,mp4',
+    };
+
+    function givenReadyVideo(overrides: Partial<Video> = {}): Video {
+      const video = buildVideo(CHANNEL_ID, {
+        status: VideoStatus.READY,
+        duration: 2,
+        metadata,
+        thumbnail_key: 'videos/v/thumbnail.jpg',
+        created_at: new Date('2026-10-07T12:00:00Z'),
+        channel: { nickname: 'john_doe', name: 'John' } as Video['channel'],
+        ...overrides,
+      });
+      videoRepository.findOne.mockResolvedValue(video);
+      return video;
+    }
+
+    beforeEach(() => {
+      storageService.presignGetObject.mockResolvedValue(
+        'https://storage/signed',
+      );
+    });
+
+    describe('findReadyByPublicId', () => {
+      it('should look up only ready videos, with their channel', async () => {
+        const video = givenReadyVideo();
+
+        await expect(
+          service.findReadyByPublicId(video.public_id),
+        ).resolves.toBe(video);
+        expect(videoRepository.findOne).toHaveBeenCalledWith({
+          where: { public_id: video.public_id, status: VideoStatus.READY },
+          relations: ['channel'],
+        });
+      });
+
+      it('should throw VideoNotFoundException when nothing matches', async () => {
+        videoRepository.findOne.mockResolvedValue(null);
+
+        await expect(
+          service.findReadyByPublicId('unknown'),
+        ).rejects.toBeInstanceOf(VideoNotFoundException);
+      });
+    });
+
+    describe('getPublicDetails', () => {
+      it('should expose public fields only', async () => {
+        const video = givenReadyVideo();
+
+        const details = await service.getPublicDetails(video.public_id);
+
+        expect(details).toEqual({
+          public_id: video.public_id,
+          title: video.title,
+          duration: 2,
+          metadata,
+          size: video.size,
+          channel: { nickname: 'john_doe', name: 'John' },
+          created_at: new Date('2026-10-07T12:00:00Z'),
+        });
+      });
+
+      it('should treat a ready row without processing results as not found', async () => {
+        givenReadyVideo({ duration: null, metadata: null });
+
+        await expect(service.getPublicDetails('x')).rejects.toBeInstanceOf(
+          VideoNotFoundException,
+        );
+      });
+    });
+
+    describe('presigned URLs', () => {
+      it('should sign the stream URL for clients with the video content type', async () => {
+        const video = givenReadyVideo();
+
+        await expect(service.getStreamUrl(video.public_id)).resolves.toBe(
+          'https://storage/signed',
+        );
+        expect(storageService.presignGetObject).toHaveBeenCalledWith(
+          video.storage_key,
+          {
+            expiresIn: 3600,
+            audience: 'public',
+            responseContentType: 'video/mp4',
+          },
+        );
+      });
+
+      it('should sign the download URL as an attachment named after the upload', async () => {
+        const video = givenReadyVideo({
+          original_filename: 'férias "2026"/final.mp4',
+        });
+
+        await service.getDownloadUrl(video.public_id);
+
+        expect(storageService.presignGetObject).toHaveBeenCalledWith(
+          video.storage_key,
+          {
+            expiresIn: 3600,
+            audience: 'public',
+            responseContentType: 'video/mp4',
+            responseContentDisposition:
+              'attachment; filename="f_rias _2026__final.mp4"; ' +
+              "filename*=UTF-8''f%C3%A9rias%20%222026%22%2Ffinal.mp4",
+          },
+        );
+      });
+
+      it('should sign the thumbnail URL from the thumbnail key', async () => {
+        const video = givenReadyVideo();
+
+        await service.getThumbnailUrl(video.public_id);
+
+        expect(storageService.presignGetObject).toHaveBeenCalledWith(
+          'videos/v/thumbnail.jpg',
+          { expiresIn: 3600, audience: 'public' },
+        );
+      });
+
+      it('should report a ready video without thumbnail as not found', async () => {
+        givenReadyVideo({ thumbnail_key: null });
+
+        await expect(service.getThumbnailUrl('x')).rejects.toBeInstanceOf(
+          VideoNotFoundException,
+        );
+      });
+
+      it.each(['getStreamUrl', 'getDownloadUrl', 'getThumbnailUrl'] as const)(
+        'should not sign anything in %s when the video is not public',
+        async (method) => {
+          videoRepository.findOne.mockResolvedValue(null);
+
+          await expect(service[method]('x')).rejects.toBeInstanceOf(
+            VideoNotFoundException,
+          );
+          expect(storageService.presignGetObject).not.toHaveBeenCalled();
+        },
+      );
+    });
+  });
+
+  describe('attachmentDisposition', () => {
+    it.each([
+      [
+        'clip.mp4',
+        `attachment; filename="clip.mp4"; filename*=UTF-8''clip.mp4`,
+      ],
+      [
+        "it's (1).mp4",
+        `attachment; filename="it_s _1_.mp4"; filename*=UTF-8''it%27s%20%281%29.mp4`,
+      ],
+      [
+        'a"b\r\nX-Injected: 1.mp4',
+        `attachment; filename="a_b__X-Injected_ 1.mp4"; filename*=UTF-8''a%22b%0D%0AX-Injected%3A%201.mp4`,
+      ],
+    ])('should build a safe header for %j', (filename, expected) => {
+      expect(attachmentDisposition(filename)).toBe(expected);
     });
   });
 });

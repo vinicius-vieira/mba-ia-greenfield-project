@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 11/14 completed
+**SIs:** 12/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -87,9 +87,11 @@
   - The acceptance criterion about jobs waiting while the worker is stopped was not exercised as an automated test in this SI; the real-worker pipeline is covered by SI-03.13.
 
 ### SI-03.12 — Public Video Details, Streaming, Download and Thumbnail
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** `videos.service.spec.ts` 57 (14 new), `videos.service.integration-spec.ts` 17 (6 new, real DB + MinIO: `206` on a range, attachment disposition), E2E `test/videos.e2e-spec.ts` 64 (20 new); `tsc` and `eslint` clean
+- **Observations:** 
+  - The download `Content-Disposition` carries an ASCII fallback name plus the exact name as RFC 5987 `filename*`; characters outside `[A-Za-z0-9_.- ]` (quotes, CR/LF, slashes) are replaced in the fallback so a crafted file name cannot inject headers.
+  - A `ready` row missing `duration`/`metadata` or `thumbnail_key` is answered as `VIDEO_NOT_FOUND` rather than a 500.
 
 ### SI-03.13 — End-to-End Pipeline Through the Real Worker and Contract Export
 - **Status:** pending
