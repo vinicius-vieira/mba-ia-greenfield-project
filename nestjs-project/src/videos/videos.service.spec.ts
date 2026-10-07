@@ -1,5 +1,12 @@
 import { QueryFailedError } from 'typeorm';
-import { ChannelNotFoundException } from '../common/exceptions/domain.exception';
+import {
+  ChannelNotFoundException,
+  InvalidUploadPartsException,
+  VideoNotFoundException,
+  VideoNotOwnedException,
+  VideoUploadNotInProgressException,
+} from '../common/exceptions/domain.exception';
+import { buildVideo } from '../test/video-factory';
 import { Video, VideoStatus } from './entities/video.entity';
 import { VideosService } from './videos.service';
 
@@ -21,11 +28,16 @@ describe('VideosService', () => {
     existsBy: jest.Mock;
     create: jest.Mock;
     insert: jest.Mock;
+    findOne: jest.Mock;
+    delete: jest.Mock;
   };
   let channelsService: { findByUserId: jest.Mock };
   let storageService: {
     createMultipartUpload: jest.Mock;
     abortMultipartUpload: jest.Mock;
+    presignUploadPart: jest.Mock;
+    listParts: jest.Mock;
+    deleteObject: jest.Mock;
   };
 
   beforeEach(() => {
@@ -35,6 +47,8 @@ describe('VideosService', () => {
         Object.assign(new Video(), fields),
       ),
       insert: jest.fn().mockResolvedValue(undefined),
+      findOne: jest.fn().mockResolvedValue(null),
+      delete: jest.fn().mockResolvedValue(undefined),
     };
     channelsService = {
       findByUserId: jest.fn().mockResolvedValue({ id: CHANNEL_ID }),
@@ -42,6 +56,9 @@ describe('VideosService', () => {
     storageService = {
       createMultipartUpload: jest.fn().mockResolvedValue('upload-1'),
       abortMultipartUpload: jest.fn().mockResolvedValue(undefined),
+      presignUploadPart: jest.fn(),
+      listParts: jest.fn().mockResolvedValue([]),
+      deleteObject: jest.fn().mockResolvedValue(undefined),
     };
     service = new VideosService(
       videoRepository as never,
@@ -165,6 +182,214 @@ describe('VideosService', () => {
         ChannelNotFoundException,
       );
       expect(storageService.createMultipartUpload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('owner upload operations', () => {
+    const VIDEO_ID = 'video-1';
+
+    function givenVideo(
+      overrides: Partial<Video> = {},
+      uploadId: string | null = 'upload-1',
+    ): Video {
+      const video = buildVideo(CHANNEL_ID, {
+        id: VIDEO_ID,
+        size: 40_000_000,
+        ...overrides,
+      });
+      videoRepository.findOne.mockImplementation(
+        ({ select }: { select?: unknown }) =>
+          Promise.resolve(
+            select ? { id: VIDEO_ID, upload_id: uploadId } : video,
+          ),
+      );
+      return video;
+    }
+
+    describe('getOwnedVideo', () => {
+      it('should return the video when the caller channel owns it', async () => {
+        const video = givenVideo();
+
+        await expect(service.getOwnedVideo(USER_ID, VIDEO_ID)).resolves.toBe(
+          video,
+        );
+      });
+
+      it('should throw VideoNotFoundException for an unknown id', async () => {
+        videoRepository.findOne.mockResolvedValue(null);
+
+        await expect(
+          service.getOwnedVideo(USER_ID, VIDEO_ID),
+        ).rejects.toBeInstanceOf(VideoNotFoundException);
+        expect(channelsService.findByUserId).not.toHaveBeenCalled();
+      });
+
+      it('should throw VideoNotOwnedException for another channel', async () => {
+        givenVideo({ channel_id: 'someone-else' });
+
+        await expect(
+          service.getOwnedVideo(USER_ID, VIDEO_ID),
+        ).rejects.toBeInstanceOf(VideoNotOwnedException);
+      });
+    });
+
+    describe('getUploadState', () => {
+      it('should expose status, failure reason and the upload plan', async () => {
+        const video = givenVideo({
+          status: VideoStatus.FAILED,
+          failure_reason: 'No video stream found',
+          created_at: new Date('2026-10-07T12:00:00Z'),
+        });
+
+        await expect(
+          service.getUploadState(USER_ID, VIDEO_ID),
+        ).resolves.toEqual({
+          id: VIDEO_ID,
+          public_id: video.public_id,
+          title: video.title,
+          status: VideoStatus.FAILED,
+          failure_reason: 'No video stream found',
+          size: 40_000_000,
+          upload: { part_size: 16777216, part_count: 3 },
+          created_at: new Date('2026-10-07T12:00:00Z'),
+        });
+      });
+    });
+
+    describe('createPartUploadUrls', () => {
+      it('should presign each requested part with a one-hour lifetime', async () => {
+        const video = givenVideo();
+        storageService.presignUploadPart.mockImplementation(
+          (_key: string, _uploadId: string, partNumber: number) =>
+            Promise.resolve(`https://storage/part-${partNumber}`),
+        );
+
+        const result = await service.createPartUploadUrls(
+          USER_ID,
+          VIDEO_ID,
+          [1, 3],
+        );
+
+        expect(result).toEqual({
+          urls: [
+            { part_number: 1, url: 'https://storage/part-1' },
+            { part_number: 3, url: 'https://storage/part-3' },
+          ],
+          expires_in: 3600,
+        });
+        expect(storageService.presignUploadPart).toHaveBeenCalledWith(
+          video.storage_key,
+          'upload-1',
+          1,
+          3600,
+        );
+      });
+
+      it('should reject a part number above the part count', async () => {
+        givenVideo();
+
+        await expect(
+          service.createPartUploadUrls(USER_ID, VIDEO_ID, [1, 4]),
+        ).rejects.toBeInstanceOf(InvalidUploadPartsException);
+        expect(storageService.presignUploadPart).not.toHaveBeenCalled();
+      });
+
+      it.each([VideoStatus.PROCESSING, VideoStatus.READY, VideoStatus.FAILED])(
+        'should reject a %s video',
+        async (status) => {
+          givenVideo({ status });
+
+          await expect(
+            service.createPartUploadUrls(USER_ID, VIDEO_ID, [1]),
+          ).rejects.toBeInstanceOf(VideoUploadNotInProgressException);
+        },
+      );
+
+      it('should reject a draft whose multipart upload is already completed', async () => {
+        givenVideo({}, null);
+
+        await expect(
+          service.createPartUploadUrls(USER_ID, VIDEO_ID, [1]),
+        ).rejects.toBeInstanceOf(VideoUploadNotInProgressException);
+      });
+    });
+
+    describe('listUploadedParts', () => {
+      it('should map the storage listing to the API shape', async () => {
+        givenVideo();
+        storageService.listParts.mockResolvedValue([
+          { partNumber: 1, etag: '"abc"', size: 16777216 },
+        ]);
+
+        await expect(
+          service.listUploadedParts(USER_ID, VIDEO_ID),
+        ).resolves.toEqual({
+          parts: [{ part_number: 1, etag: '"abc"', size: 16777216 }],
+        });
+      });
+
+      it('should return no parts once the multipart upload is completed', async () => {
+        givenVideo({}, null);
+
+        await expect(
+          service.listUploadedParts(USER_ID, VIDEO_ID),
+        ).resolves.toEqual({
+          parts: [],
+        });
+        expect(storageService.listParts).not.toHaveBeenCalled();
+      });
+
+      it('should reject a video that is not a draft', async () => {
+        givenVideo({ status: VideoStatus.PROCESSING });
+
+        await expect(
+          service.listUploadedParts(USER_ID, VIDEO_ID),
+        ).rejects.toBeInstanceOf(VideoUploadNotInProgressException);
+      });
+    });
+
+    describe('abortUpload', () => {
+      it('should abort the multipart upload and delete the draft', async () => {
+        const video = givenVideo();
+
+        await service.abortUpload(USER_ID, VIDEO_ID);
+
+        expect(storageService.abortMultipartUpload).toHaveBeenCalledWith(
+          video.storage_key,
+          'upload-1',
+        );
+        expect(videoRepository.delete).toHaveBeenCalledWith({ id: VIDEO_ID });
+      });
+
+      it('should delete the stored object when the multipart upload is already completed', async () => {
+        const video = givenVideo({}, null);
+
+        await service.abortUpload(USER_ID, VIDEO_ID);
+
+        expect(storageService.deleteObject).toHaveBeenCalledWith(
+          video.storage_key,
+        );
+        expect(storageService.abortMultipartUpload).not.toHaveBeenCalled();
+        expect(videoRepository.delete).toHaveBeenCalledWith({ id: VIDEO_ID });
+      });
+
+      it('should keep a video that is not a draft', async () => {
+        givenVideo({ status: VideoStatus.READY });
+
+        await expect(
+          service.abortUpload(USER_ID, VIDEO_ID),
+        ).rejects.toBeInstanceOf(VideoUploadNotInProgressException);
+        expect(videoRepository.delete).not.toHaveBeenCalled();
+      });
+
+      it("should not delete another channel's draft", async () => {
+        givenVideo({ channel_id: 'someone-else' });
+
+        await expect(
+          service.abortUpload(USER_ID, VIDEO_ID),
+        ).rejects.toBeInstanceOf(VideoNotOwnedException);
+        expect(videoRepository.delete).not.toHaveBeenCalled();
+      });
     });
   });
 });

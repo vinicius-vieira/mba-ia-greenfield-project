@@ -5,13 +5,25 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { isUniqueViolationOn } from '../common/database/pg-errors.util';
+import {
+  InvalidUploadPartsException,
+  VideoNotFoundException,
+  VideoNotOwnedException,
+  VideoUploadNotInProgressException,
+} from '../common/exceptions/domain.exception';
 import { videoOriginalKey } from '../storage/storage.constants';
 import { StorageService } from '../storage/storage.service';
+import { PartUrlsDto, UploadedPartsDto } from './dto/create-part-urls.dto';
 import { InitiateUploadDto } from './dto/initiate-upload.dto';
-import { UploadInitiatedDto, UploadPlanDto } from './dto/upload-state.dto';
+import {
+  UploadInitiatedDto,
+  UploadPlanDto,
+  UploadStateDto,
+} from './dto/upload-state.dto';
 import { Video, VideoStatus } from './entities/video.entity';
 import { generateVideoPublicId } from './video-public-id.util';
 import {
+  PRESIGNED_URL_TTL_SECONDS,
   UPLOAD_PART_SIZE_BYTES,
   VIDEO_PUBLIC_ID_MAX_ATTEMPTS,
 } from './videos.constants';
@@ -82,6 +94,126 @@ export class VideosService {
       status: video.status,
       upload: uploadPlanFor(video.size),
     };
+  }
+
+  /** The video, provided the caller's channel owns it. */
+  async getOwnedVideo(userId: string, videoId: string): Promise<Video> {
+    const video = await this.videoRepository.findOne({
+      where: { id: videoId },
+    });
+    if (!video) {
+      throw new VideoNotFoundException();
+    }
+    const channel = await this.channelsService.findByUserId(userId);
+    if (video.channel_id !== channel.id) {
+      throw new VideoNotOwnedException();
+    }
+    return video;
+  }
+
+  async getUploadState(
+    userId: string,
+    videoId: string,
+  ): Promise<UploadStateDto> {
+    const video = await this.getOwnedVideo(userId, videoId);
+    return {
+      id: video.id,
+      public_id: video.public_id,
+      title: video.title,
+      status: video.status,
+      failure_reason: video.failure_reason,
+      size: video.size,
+      upload: uploadPlanFor(video.size),
+      created_at: video.created_at,
+    };
+  }
+
+  async createPartUploadUrls(
+    userId: string,
+    videoId: string,
+    partNumbers: number[],
+  ): Promise<PartUrlsDto> {
+    const video = await this.getOwnedDraft(userId, videoId);
+    const uploadId = await this.findUploadId(video.id);
+    if (!uploadId) {
+      // The multipart upload was already completed in the storage.
+      throw new VideoUploadNotInProgressException();
+    }
+
+    const { part_count: partCount } = uploadPlanFor(video.size);
+    if (partNumbers.some((partNumber) => partNumber > partCount)) {
+      throw new InvalidUploadPartsException(
+        `Part numbers must be between 1 and ${partCount}`,
+      );
+    }
+
+    const urls = await Promise.all(
+      partNumbers.map(async (partNumber) => ({
+        part_number: partNumber,
+        url: await this.storageService.presignUploadPart(
+          video.storage_key,
+          uploadId,
+          partNumber,
+          PRESIGNED_URL_TTL_SECONDS,
+        ),
+      })),
+    );
+    return { urls, expires_in: PRESIGNED_URL_TTL_SECONDS };
+  }
+
+  /** Parts the storage already holds — what a client needs to resume. */
+  async listUploadedParts(
+    userId: string,
+    videoId: string,
+  ): Promise<UploadedPartsDto> {
+    const video = await this.getOwnedDraft(userId, videoId);
+    const uploadId = await this.findUploadId(video.id);
+    if (!uploadId) {
+      return { parts: [] };
+    }
+
+    const parts = await this.storageService.listParts(
+      video.storage_key,
+      uploadId,
+    );
+    return {
+      parts: parts.map((part) => ({
+        part_number: part.partNumber,
+        etag: part.etag,
+        size: part.size,
+      })),
+    };
+  }
+
+  async abortUpload(userId: string, videoId: string): Promise<void> {
+    const video = await this.getOwnedDraft(userId, videoId);
+    const uploadId = await this.findUploadId(video.id);
+    if (uploadId) {
+      await this.storageService.abortMultipartUpload(
+        video.storage_key,
+        uploadId,
+      );
+    } else {
+      await this.storageService.deleteObject(video.storage_key);
+    }
+    await this.videoRepository.delete({ id: video.id });
+  }
+
+  private async getOwnedDraft(userId: string, videoId: string): Promise<Video> {
+    const video = await this.getOwnedVideo(userId, videoId);
+    if (video.status !== VideoStatus.DRAFT) {
+      throw new VideoUploadNotInProgressException();
+    }
+    return video;
+  }
+
+  // `upload_id` is `select: false`; it is loaded only by the upload operations.
+  private async findUploadId(videoId: string): Promise<string | null> {
+    const row = await this.videoRepository.findOne({
+      where: { id: videoId },
+      select: { id: true, upload_id: true },
+    });
+    return row?.upload_id ?? null;
   }
 
   private async insertDraft(fields: Partial<Video>): Promise<Video> {

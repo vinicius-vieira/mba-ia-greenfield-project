@@ -1,7 +1,12 @@
+import { randomBytes } from 'node:crypto';
 import { DataSource, Repository } from 'typeorm';
 import { ChannelsService } from '../channels/channels.service';
 import { Channel } from '../channels/entities/channel.entity';
-import { ChannelNotFoundException } from '../common/exceptions/domain.exception';
+import {
+  ChannelNotFoundException,
+  VideoNotOwnedException,
+} from '../common/exceptions/domain.exception';
+import { InvalidMultipartPartsError } from '../storage/storage.errors';
 import { StorageService } from '../storage/storage.service';
 import {
   cleanAllTables,
@@ -96,6 +101,57 @@ describe('VideosService (integration)', () => {
         ChannelNotFoundException,
       );
       expect(await videoRepository.count()).toBe(0);
+    });
+  });
+
+  describe('owner upload operations', () => {
+    const dto = { filename: 'clip.mp4', content_type: 'video/mp4', size: 2048 };
+
+    it('should list a part uploaded through an issued URL', async () => {
+      const { id } = await service.initiateUpload(user.id, dto);
+      const bytes = randomBytes(dto.size);
+
+      const { urls } = await service.createPartUploadUrls(user.id, id, [1]);
+      const put = await fetch(urls[0].url, {
+        method: 'PUT',
+        body: new Uint8Array(bytes),
+      });
+      const listed = await service.listUploadedParts(user.id, id);
+
+      expect(put.status).toBe(200);
+      expect(listed.parts).toEqual([
+        { part_number: 1, etag: put.headers.get('etag'), size: dto.size },
+      ]);
+
+      await service.abortUpload(user.id, id);
+    });
+
+    it('should remove the row and the multipart upload on abort', async () => {
+      const { id } = await service.initiateUpload(user.id, dto);
+      const before = await findWithUploadId(id);
+
+      await service.abortUpload(user.id, id);
+
+      await expect(videoRepository.findOneBy({ id })).resolves.toBeNull();
+      // The storage no longer knows the upload: completing it is rejected.
+      await expect(
+        storage.completeMultipartUpload(
+          before.storage_key,
+          before.upload_id as string,
+          [{ partNumber: 1, etag: '"x"' }],
+        ),
+      ).rejects.toBeInstanceOf(InvalidMultipartPartsError);
+    });
+
+    it("should refuse another user's video", async () => {
+      const { id } = await service.initiateUpload(user.id, dto);
+      const other = await createUserWithChannel(dataSource);
+
+      await expect(
+        service.getUploadState(other.user.id, id),
+      ).rejects.toBeInstanceOf(VideoNotOwnedException);
+
+      await service.abortUpload(user.id, id);
     });
   });
 });

@@ -1,7 +1,7 @@
 # phase-03-videos — Progress
 
 **Status:** in_progress
-**SIs:** 6/14 completed
+**SIs:** 7/14 completed
 
 ### SI-03.1 — Baseline Repair: Lint and Re-runnable Migration Test
 - **Status:** completed
@@ -49,9 +49,11 @@
   - Response/DTO file is `src/videos/dto/upload-state.dto.ts` (holds the initiate response and the upload-state response used by SI-03.7).
 
 ### SI-03.7 — Upload Parts: Presigned URLs, Resume, State and Abort
-- **Status:** pending
-- **Tests:** —
-- **Observations:** none
+- **Status:** completed
+- **Tests:** 69 passing — `videos.service.spec.ts` 29 (17 new), `videos.service.integration-spec.ts` 6 (3 new), E2E `test/videos.e2e-spec.ts` 34 (25 new); `tsc` and `eslint` clean
+- **Observations:** 
+  - `abortUpload` also covers a draft whose multipart upload was already completed in the storage (the retry window opened by SI-03.8's compensation): it deletes the stored object instead of aborting the upload.
+  - E2E drafts that are not aborted leave unfinished multipart uploads behind in the MinIO volume of the dev stack; harmless for the suites, no cleanup job exists (stale drafts are left as-is in this phase per `phase-03-videos/TD-07`).
 
 ### SI-03.8 — Upload Completion and Processing Job Publishing
 - **Status:** pending
