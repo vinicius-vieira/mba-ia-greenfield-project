@@ -48,3 +48,47 @@ export class TokenReuseDetectedException extends DomainException {
     );
   }
 }
+
+export class ChannelNotFoundException extends DomainException {
+  constructor() {
+    super('CHANNEL_NOT_FOUND', 404, 'Channel not found for this user');
+  }
+}
+
+export class VideoNotFoundException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_FOUND', 404, 'Video not found');
+  }
+}
+
+export class VideoNotOwnedException extends DomainException {
+  constructor() {
+    super('VIDEO_NOT_OWNED', 403, 'Video belongs to another channel');
+  }
+}
+
+export class VideoUploadNotInProgressException extends DomainException {
+  constructor() {
+    super(
+      'VIDEO_UPLOAD_NOT_IN_PROGRESS',
+      409,
+      'Video upload is not in progress',
+    );
+  }
+}
+
+export class InvalidUploadPartsException extends DomainException {
+  constructor(message = 'Upload parts are invalid') {
+    super('INVALID_UPLOAD_PARTS', 400, message);
+  }
+}
+
+export class UploadSizeMismatchException extends DomainException {
+  constructor() {
+    super(
+      'UPLOAD_SIZE_MISMATCH',
+      400,
+      'Uploaded file size differs from the declared size',
+    );
+  }
+}

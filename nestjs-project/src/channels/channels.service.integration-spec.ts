@@ -1,4 +1,5 @@
 import { DataSource, Repository } from 'typeorm';
+import { ChannelNotFoundException } from '../common/exceptions/domain.exception';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { VerificationToken } from '../auth/entities/verification-token.entity';
 import {
@@ -87,6 +88,29 @@ describe('ChannelsService (integration)', () => {
 
       const channels = await channelRepository.find();
       expect(channels).toHaveLength(2);
+    });
+  });
+
+  describe('findByUserId', () => {
+    it("returns the user's channel", async () => {
+      const user = await createUser();
+      const created = await channelsService.createChannel(
+        user.id,
+        'lookup@example.com',
+      );
+
+      const found = await channelsService.findByUserId(user.id);
+
+      expect(found.id).toBe(created.id);
+      expect(found.user_id).toBe(user.id);
+    });
+
+    it('throws ChannelNotFoundException for a user without channel', async () => {
+      const user = await createUser();
+
+      await expect(
+        channelsService.findByUserId(user.id),
+      ).rejects.toBeInstanceOf(ChannelNotFoundException);
     });
   });
 });

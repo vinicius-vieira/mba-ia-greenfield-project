@@ -20,7 +20,7 @@ Services are the most varied artifact type. The test layer depends on the servic
 | DB access only (no branching) | — | ✅ real DB | No logic to unit-test; the DB contract IS the behavior |
 | Branching + DB access | ✅ mock repo (test branches) | ✅ real DB (test queries) | Unit proves logic; integration proves queries — neither substitutes the other |
 | Configured lib (JWT, cache, throttle) | ✅ real lib with test config | — | Mocking hides config bugs; use real lib with test-safe values |
-| Side-effect dep (email, storage) | — | ✅ real capture service | Mailpit captures SMTP; local filesystem for storage |
+| Side-effect dep (email, storage, queue) | — | ✅ real service in Docker | Mailpit captures SMTP; MinIO for object storage; Redis for the queue (see `references/external-systems.md`) |
 | Branching + side-effect dep | ✅ mock the dep (test branches) | ✅ real capture service | Both layers needed |
 | Pure delegation (no branching, no boundary) | — | — | Skip — no testable behavior |
 
@@ -165,6 +165,6 @@ Currently only `AppService` exists (scaffolding — no branching, no DB → skip
 When domain services are created:
 - **AuthService** [branching + configured lib (JWT)] → Unit: test login/register/reset branches with mocked UsersService + real JwtModule. Integration: if it directly queries the DB.
 - **UsersService** [DB access + possible branching] → Unit: test branch logic if any (mock repo). Integration: test DB queries with real PostgreSQL.
-- **VideosService** [DB + storage + queue] → Unit: test status transitions, visibility rules (mock deps). Integration: test DB queries, storage uploads (local adapter), queue publishing.
+- **VideosService** [DB + storage + queue] → Unit: test status transitions, visibility rules (mock deps). Integration: test DB queries, storage operations (real MinIO), queue publishing (real Redis, isolated `QUEUE_PREFIX`).
 - **CommentsService** [DB + branching for nesting] → Unit: test nesting depth validation. Integration: test nested comment queries.
 - **ChannelsService** [DB access] → Integration: test slug uniqueness, ownership queries.

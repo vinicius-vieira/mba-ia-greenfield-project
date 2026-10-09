@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource, QueryFailedError } from 'typeorm';
+import { ChannelNotFoundException } from '../common/exceptions/domain.exception';
 import { appendRandomSuffix, sanitizeNickname } from './nickname.util';
 import { Channel } from './entities/channel.entity';
 
@@ -7,9 +8,14 @@ const PG_UNIQUE_VIOLATION = '23505';
 const NICKNAME_COLUMN = 'nickname';
 const MAX_RETRIES = 5;
 
+interface PgDriverError {
+  code?: string;
+  detail?: string;
+}
+
 function isPgUniqueViolationOnColumn(err: unknown, column: string): boolean {
   if (!(err instanceof QueryFailedError)) return false;
-  const e = err as any;
+  const e = err as QueryFailedError & PgDriverError;
   return (
     e.code === PG_UNIQUE_VIOLATION &&
     typeof e.detail === 'string' &&
@@ -20,6 +26,16 @@ function isPgUniqueViolationOnColumn(err: unknown, column: string): boolean {
 @Injectable()
 export class ChannelsService {
   constructor(private readonly dataSource: DataSource) {}
+
+  async findByUserId(userId: string): Promise<Channel> {
+    const channel = await this.dataSource
+      .getRepository(Channel)
+      .findOne({ where: { user_id: userId } });
+    if (!channel) {
+      throw new ChannelNotFoundException();
+    }
+    return channel;
+  }
 
   async createChannel(userId: string, email: string): Promise<Channel> {
     const baseNickname = sanitizeNickname(email.split('@')[0]);
